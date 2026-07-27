@@ -1,0 +1,35 @@
+# systemd unit para desplegar Vento sin Docker (bare-metal / VM).
+#
+# Instalación:
+#   sudo cp deploy/vento-backend.service /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now vento-backend
+#   sudo systemctl status vento-backend
+#
+# Ajusta User, WorkingDirectory y las rutas del venv a tu servidor.
+# Requiere: venv en .venv con requirements instalados y .env configurado.
+
+[Unit]
+Description=Vento Backend (FastAPI)
+After=network.target postgresql.service
+Wants=postgresql.service
+
+[Service]
+Type=exec
+User=vento
+Group=vento
+WorkingDirectory=/opt/AppVento---Backend
+EnvironmentFile=/opt/AppVento---Backend/.env
+
+# Aplica migraciones antes de arrancar (crea/actualiza las 3 tablas).
+ExecStartPre=/opt/AppVento---Backend/.venv/bin/alembic upgrade head
+
+ExecStart=/opt/AppVento---Backend/.venv/bin/gunicorn main:app \
+    -k uvicorn.workers.UvicornWorker \
+    -w 2 -b 127.0.0.1:8000 --timeout 120
+
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

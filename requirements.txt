@@ -1,0 +1,11 @@
+fastapi>=0.115
+uvicorn[standard]>=0.30
+h3>=4.1
+pandas>=2.2
+pyarrow>=16
+SQLAlchemy>=2.0
+psycopg[binary]>=3.2
+PyJWT[crypto]>=2.9
+python-dotenv>=1.0
+alembic>=1.13
+gunicorn>=22.0

@@ -1,0 +1,15 @@
+# Datos (no se versionan)
+data/*.parquet
+*.parquet
+
+# Entorno
+.env
+.venv/
+venv/
+.claude/*
+
+# Python
+__pycache__/
+*.pyc
+.pytest_cache/
+.cpython/*
