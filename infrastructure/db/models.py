@@ -74,10 +74,26 @@ class Hexagon(Base):
     h3_index: Mapped[str] = mapped_column(String, primary_key=True)
     score_general: Mapped[float] = mapped_column(Float, default=0.0)
     tipo_celda: Mapped[str] = mapped_column(String, default="disponible")
-    # lat/lng nullables: el índice en memoria los deriva del h3_index si faltan.
-    lat: Mapped[float | None] = mapped_column(Float, nullable=True)
-    lng: Mapped[float | None] = mapped_column(Float, nullable=True)
+    # lat/lng se calculan del h3_index EN LA INGESTA y se persisten: permiten las
+    # consultas por bbox (tiles) sin cargar nada a memoria (btree en la migración).
+    lat: Mapped[float | None] = mapped_column(Float, nullable=True, index=True)
+    lng: Mapped[float | None] = mapped_column(Float, nullable=True, index=True)
     variables: Mapped[dict] = mapped_column(JSONB, default=dict)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=_now, onupdate=_now
     )
+
+
+class HexagonMeta(Base):
+    """
+    Metadatos AGREGADOS del dataset, precalculados en la ingesta (una pasada):
+    rango [min, max] por variable para normalizar, y el catálogo de variables.
+
+    Evita el barrido de todo el dataset en cada request (lo que antes hacía el
+    índice en memoria). Es una tabla diminuta: una fila por variable.
+    """
+    __tablename__ = "hexagon_meta"
+
+    variable: Mapped[str] = mapped_column(String, primary_key=True)
+    vmin: Mapped[float] = mapped_column(Float)
+    vmax: Mapped[float] = mapped_column(Float)

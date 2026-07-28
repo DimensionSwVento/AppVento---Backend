@@ -7,10 +7,12 @@ import os
 from collections.abc import Iterator
 from datetime import datetime, timezone
 
+import h3
 import pandas as pd
 import pyarrow.parquet as pq
 
 from domain.models.hexagon import HexagonData
+from domain.query_engine.scoring import effective_score, is_in_colombia
 
 # Columnas que NO son variables (metadatos / geometría / score).
 # El parquet real trae `h3_index` + variables codificadas (`TEC_001_sv001`, `REG_002`,
@@ -68,11 +70,19 @@ def iter_parquet_rows(path: str, batch_size: int = 20000) -> Iterator[dict]:
 
     for batch in pf.iter_batches(batch_size=batch_size):
         for rec in batch.to_pylist():  # solo materializa un lote
+            h3_index = str(rec["h3_index"])
+            lat, lng = h3.cell_to_latlng(h3_index)
+            if not is_in_colombia(lat, lng):
+                continue  # el filtro geográfico se aplica UNA vez, en la ingesta
+            variables = {k: rec.get(k) for k in variable_names}
             score = rec.get("score_general")
             tipo = rec.get("tipo_celda")
             yield {
-                "h3_index": str(rec["h3_index"]),
-                "score_general": float(score) if score is not None else 0.0,
+                "h3_index": h3_index,
+                # score efectivo persistido (placeholder si el parquet no trae score)
+                "score_general": effective_score(float(score) if score is not None else 0.0, variables),
                 "tipo_celda": str(tipo) if tipo is not None else "disponible",
-                "variables": {k: rec.get(k) for k in variable_names},
+                "lat": lat,
+                "lng": lng,
+                "variables": variables,
             }

@@ -5,14 +5,13 @@ Si target_res < resolución del índice (8), agrupa por cell_to_parent y promedi
 Si target_res == 8, pasa directo sin costo.
 """
 from __future__ import annotations
-from typing import TYPE_CHECKING, Optional
+from typing import Optional
 import h3
 
-if TYPE_CHECKING:
-    from infrastructure.spatial.tile_index import _IndexedHex
+from domain.query_engine.source import HexRow
 
 
-def aggregate(hexes: "list[_IndexedHex]", target_res: int) -> "list[_IndexedHex]":
+def aggregate(hexes: "list[HexRow]", target_res: int) -> "list[HexRow]":
     """
     Agrupa hexágonos al target_res pedido.
     Si target_res es igual a la resolución de los hexágonos de entrada, devuelve tal cual.
@@ -24,8 +23,6 @@ def aggregate(hexes: "list[_IndexedHex]", target_res: int) -> "list[_IndexedHex]
 
     if current_res == target_res:
         return hexes
-
-    from infrastructure.spatial.tile_index import _IndexedHex as IH
 
     groups: dict[str, dict] = {}
 
@@ -75,7 +72,7 @@ def aggregate(hexes: "list[_IndexedHex]", target_res: int) -> "list[_IndexedHex]
         for k, vt in g["var_texts"].items():
             variables[k] = vt
 
-        result.append(IH(
+        result.append(HexRow(
             h3_index=hex_id,
             score_general=g["total_score"] / g["count"],
             tipo_celda=g["tipo"],

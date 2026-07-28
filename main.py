@@ -16,12 +16,31 @@ from fastapi.concurrency import run_in_threadpool
 from fastapi.middleware.cors import CORSMiddleware
 
 from shared import config
-from application.services import tile_service
-from infrastructure.db.session import init_db
+from infrastructure.db.session import init_db, SessionLocal
+from infrastructure.db.hexagon_query_repository import PostgresHexagonSource
 from api.routers import historial, tiles
 
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger("vento")
+
+
+def _startup_check() -> None:
+    """
+    STATELESS: no se carga nada a memoria. Solo verifica la BD e imprime un
+    resumen de seguimiento (hexágonos y variables disponibles). Barato.
+    """
+    db = SessionLocal()
+    try:
+        src = PostgresHexagonSource(db)
+        if not src.is_ready():
+            log.warning("Tabla `hexagon` vacía — corre `python -m tools.ingest_parquet`.")
+            return
+        n_hex  = src.count()
+        n_vars = len(src.variable_names())
+        log.info("Backend stateless listo: %s hexágonos · %s variables (consulta por request).",
+                 f"{n_hex:,}", n_vars)
+    finally:
+        db.close()
 
 
 @asynccontextmanager
@@ -33,17 +52,11 @@ async def lifespan(_app: FastAPI):
     except Exception as exc:  # la DB puede no estar arriba en dev
         log.warning("No se pudo inicializar la DB: %s", exc)
 
-    # 2) Warmup del índice espacial desde el parquet.
+    # 2) Chequeo de arranque (sin carga masiva a RAM).
     try:
-        result = await run_in_threadpool(tile_service.warmup)
-        log.info("Índice cargado: %s hexágonos.", result.get("count"))
-    except FileNotFoundError:
-        log.warning(
-            "Parquet no encontrado (%s) — el índice queda vacío hasta llamar /api/tiles/warmup.",
-            config.PARQUET_PATH,
-        )
+        await run_in_threadpool(_startup_check)
     except Exception as exc:
-        log.warning("Warmup falló: %s", exc)
+        log.warning("Chequeo de arranque falló: %s", exc)
 
     yield  # ── app en ejecución ──
 
@@ -65,4 +78,11 @@ app.include_router(historial.router, prefix="/api")
 
 @app.get("/api/health", tags=["health"])
 def health() -> dict:
-    return {"status": "ok", "index_ready": tile_service.index_ready()}
+    db = SessionLocal()
+    try:
+        ready = PostgresHexagonSource(db).is_ready()
+    except Exception:
+        ready = False
+    finally:
+        db.close()
+    return {"status": "ok", "index_ready": ready}

@@ -19,7 +19,7 @@ from sqlalchemy import delete, func, select
 from sqlalchemy.orm import Session
 
 from domain.models.hexagon import HexagonData
-from infrastructure.db.models import Hexagon
+from infrastructure.db.models import Hexagon, HexagonMeta
 
 # Orden de columnas para la ingesta masiva (COPY / bulk). `updated_at` se fija a un
 # único timestamp por corrida.
@@ -59,6 +59,45 @@ def _to_row(data: dict) -> dict:
     }
 
 
+# ── Metadatos (rangos por variable) ───────────────────────────────────────────
+
+def _as_number(v) -> float | None:
+    if isinstance(v, bool):
+        return None
+    if isinstance(v, (int, float)):
+        return float(v)
+    if isinstance(v, str):
+        try:
+            return float(v)
+        except ValueError:
+            return None
+    return None
+
+
+def _accumulate_meta(acc: dict[str, list[float]], variables: dict) -> None:
+    """Actualiza {variable: [min, max]} con los valores numéricos de una fila."""
+    for k, v in (variables or {}).items():
+        num = _as_number(v)
+        if num is None:
+            continue
+        cur = acc.get(k)
+        if cur is None:
+            acc[k] = [num, num]
+        else:
+            if num < cur[0]: cur[0] = num
+            if num > cur[1]: cur[1] = num
+
+
+def _write_meta(db: Session, acc: dict[str, list[float]]) -> None:
+    """Reemplaza `hexagon_meta` con los rangos calculados (tabla diminuta)."""
+    db.execute(delete(HexagonMeta))
+    if acc:
+        db.bulk_insert_mappings(
+            HexagonMeta,
+            [{"variable": k, "vmin": mn, "vmax": mx} for k, (mn, mx) in acc.items()],
+        )
+
+
 # ── Ingesta destructiva ───────────────────────────────────────────────────────
 
 def copy_ingest(
@@ -85,23 +124,29 @@ def copy_ingest(
     raw = db.connection().connection.driver_connection  # conexión psycopg subyacente
 
     total = 0
+    meta: dict[str, list[float]] = {}
     with raw.cursor() as cur:
         cur.execute("TRUNCATE TABLE hexagon")
         with cur.copy(f"COPY hexagon ({', '.join(_COPY_COLS)}) FROM STDIN") as cp:
             cp.set_types(["text", "float8", "text", "float8", "float8", "jsonb", "timestamptz"])
             for h in hexagons:
+                variables = h.get("variables") or {}
                 cp.write_row((
                     str(h["h3_index"]),
                     float(h.get("score_general") or 0.0),
                     str(h.get("tipo_celda") or "disponible"),
                     h.get("lat"),
                     h.get("lng"),
-                    Jsonb(h.get("variables") or {}),
+                    Jsonb(variables),
                     now,
                 ))
+                _accumulate_meta(meta, variables)
                 total += 1
                 if on_progress and total % progress_every == 0:
                     on_progress(total)
+
+    # `hexagon_meta` en la MISMA transacción (misma conexión) → atómico con el COPY.
+    _write_meta(db, meta)
     db.commit()
     if on_progress:
         on_progress(total)
@@ -126,9 +171,12 @@ def replace_all(
     db.commit()  # libera el borrado; a partir de aquí solo crecen lotes acotados
 
     total = 0
+    meta: dict[str, list[float]] = {}
     batch: list[dict] = []
     for h in hexagons:
-        batch.append(_to_row(h))
+        row = _to_row(h)
+        _accumulate_meta(meta, row["variables"])
+        batch.append(row)
         if len(batch) >= batch_size:
             db.bulk_insert_mappings(Hexagon, batch)
             db.commit()
@@ -140,6 +188,9 @@ def replace_all(
         db.bulk_insert_mappings(Hexagon, batch)
         db.commit()
         total += len(batch)
+
+    _write_meta(db, meta)
+    db.commit()
     if on_progress:
         on_progress(total)
     return total

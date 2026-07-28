@@ -7,7 +7,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Optional
 
 if TYPE_CHECKING:
-    from infrastructure.spatial.tile_index import _IndexedHex
+    from domain.query_engine.source import HexRow as _IndexedHex
 
 
 # ── Resolución de nombres ─────────────────────────────────────────────────────
