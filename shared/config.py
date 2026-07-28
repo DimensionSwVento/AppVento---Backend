@@ -59,3 +59,8 @@ CORS_ORIGINS: list[str] = _list(os.getenv("CORS_ORIGINS"), ["http://localhost:30
 
 # ── Histórico ────────────────────────────────────────────────────────────────
 MAX_HISTORIAL_PER_USER: int = int(os.getenv("MAX_HISTORIAL_PER_USER", "50"))
+
+# ── Ingesta de hexágonos ──────────────────────────────────────────────────────
+# "copy" (por defecto): COPY de Postgres, rápido y atómico. "orm": fallback
+# portable por lotes (para entornos sin COPY, p.ej. tests).
+HEXAGON_INGEST: str = os.getenv("HEXAGON_INGEST", "copy")

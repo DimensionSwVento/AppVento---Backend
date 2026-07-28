@@ -9,7 +9,7 @@ from typing import Optional
 
 import h3
 
-from shared.config import PARQUET_PATH
+from shared.config import PARQUET_PATH, HEXAGON_INGEST
 from infrastructure.data.parquet_reader import read_parquet
 from infrastructure.data.variable_catalog import dimension_of, get_variable_label
 from infrastructure.spatial.tile_index import init_tile_index, is_index_ready
@@ -27,19 +27,24 @@ log = logging.getLogger("vento.tiles")
 
 # ── Ingesta desde el parquet ──────────────────────────────────────────────────
 
-def update_from_parquet(db, path: str | None = None) -> int:
+def update_from_parquet(db, path: str | None = None, on_progress=None) -> int:
     """
     Ingesta DESTRUCTIVA del parquet → tabla `hexagon` (borra y recarga).
     Fuente única de la carga; la usan tanto el bootstrap del warmup como la CLI.
     El parquet es solo ENTRADA DE INGESTA (residual), nunca fuente de runtime.
     `path` se resuelve en tiempo de llamada (respeta la config vigente).
-    Streaming: lee el parquet por lotes y no lo materializa entero (evita OOM).
+
+    Streaming: lee el parquet por lotes (no lo materializa entero → evita OOM).
+    Método según `HEXAGON_INGEST`: "copy" (Postgres, rápido y atómico) u "orm"
+    (fallback portable). `on_progress(total)` para logs de avance.
     """
     from infrastructure.data.parquet_reader import iter_parquet_rows
     from infrastructure.db import hexagon_repository as hexrepo
 
     rows = iter_parquet_rows(path or PARQUET_PATH)
-    return hexrepo.replace_all(db, rows)
+    if HEXAGON_INGEST == "orm":
+        return hexrepo.replace_all(db, rows, on_progress=on_progress)
+    return hexrepo.copy_ingest(db, rows, on_progress=on_progress)
 
 
 # ── Warmup ────────────────────────────────────────────────────────────────────

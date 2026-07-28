@@ -11,14 +11,19 @@ Dos vías de actualización, según lo acordado:
 el índice H3 en memoria desde la BD.
 """
 from __future__ import annotations
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from datetime import datetime, timezone
 
+from psycopg.types.json import Jsonb
 from sqlalchemy import delete, func, select
 from sqlalchemy.orm import Session
 
 from domain.models.hexagon import HexagonData
 from infrastructure.db.models import Hexagon
+
+# Orden de columnas para la ingesta masiva (COPY / bulk). `updated_at` se fija a un
+# único timestamp por corrida.
+_COPY_COLS = ("h3_index", "score_general", "tipo_celda", "lat", "lng", "variables", "updated_at")
 
 
 # ── Sanitizado ────────────────────────────────────────────────────────────────
@@ -56,18 +61,66 @@ def _to_row(data: dict) -> dict:
 
 # ── Ingesta destructiva ───────────────────────────────────────────────────────
 
-def replace_all(db: Session, hexagons: Iterable[dict], batch_size: int = 5000) -> int:
+def copy_ingest(
+    db: Session,
+    hexagons: Iterable[dict],
+    on_progress: Callable[[int], None] | None = None,
+    progress_every: int = 50_000,
+) -> int:
     """
-    Reemplazo total en STREAMING: borra todo e inserta por lotes, confirmando y
-    LIBERANDO memoria en cada lote. El pico de RAM es ~un lote, no el dataset
-    completo (evita el OOM que congelaba la instancia con parquets grandes).
+    Ingesta destructiva de MÁXIMO rendimiento vía **COPY** (Postgres).
 
-    Acepta cualquier iterable/generador de dicts, así que puede consumir
-    `iter_parquet_rows` sin materializar el parquet entero.
+    Camino corto `dict → tupla → COPY`: no materializa el dataset, no pasa por el
+    ORM ni por `_to_row`, y streamea fila a fila al servidor. Memoria ~constante
+    y un orden de magnitud más rápido que `INSERT` para millones de filas.
 
-    Nota: NO es atómico — borra primero y confirma por lote, así que durante la
-    recarga hay una ventana con la tabla parcialmente poblada. Es una operación
-    de mantenimiento (destructiva) por diseño.
+    ATÓMICA: `TRUNCATE` + `COPY` van en una sola transacción. Si el proceso muere
+    a mitad (OOM, kill), hace rollback y la tabla conserva los datos anteriores —
+    nunca queda a medias. Esto responde al punto del `count(*)`: se limpia sola.
+
+    `on_progress(total)` se llama cada `progress_every` filas (para logs visibles).
+    Solo Postgres (COPY). Para el camino portable, usar `replace_all`.
+    """
+    now = datetime.now(timezone.utc)
+    raw = db.connection().connection.driver_connection  # conexión psycopg subyacente
+
+    total = 0
+    with raw.cursor() as cur:
+        cur.execute("TRUNCATE TABLE hexagon")
+        with cur.copy(f"COPY hexagon ({', '.join(_COPY_COLS)}) FROM STDIN") as cp:
+            cp.set_types(["text", "float8", "text", "float8", "float8", "jsonb", "timestamptz"])
+            for h in hexagons:
+                cp.write_row((
+                    str(h["h3_index"]),
+                    float(h.get("score_general") or 0.0),
+                    str(h.get("tipo_celda") or "disponible"),
+                    h.get("lat"),
+                    h.get("lng"),
+                    Jsonb(h.get("variables") or {}),
+                    now,
+                ))
+                total += 1
+                if on_progress and total % progress_every == 0:
+                    on_progress(total)
+    db.commit()
+    if on_progress:
+        on_progress(total)
+    return total
+
+
+def replace_all(
+    db: Session,
+    hexagons: Iterable[dict],
+    batch_size: int = 5000,
+    on_progress: Callable[[int], None] | None = None,
+) -> int:
+    """
+    Reemplazo total en STREAMING vía ORM (portable, no requiere COPY). Borra todo
+    e inserta por lotes, confirmando y LIBERANDO memoria en cada lote — pico ~un
+    lote, no el dataset. Fallback de `copy_ingest` para entornos sin Postgres/COPY.
+
+    Nota: NO es atómico — confirma por lote, así que durante la recarga hay una
+    ventana con la tabla parcialmente poblada.
     """
     db.execute(delete(Hexagon))
     db.commit()  # libera el borrado; a partir de aquí solo crecen lotes acotados
@@ -81,10 +134,14 @@ def replace_all(db: Session, hexagons: Iterable[dict], batch_size: int = 5000) -
             db.commit()
             total += len(batch)
             batch = []  # <- libera el lote
+            if on_progress:
+                on_progress(total)
     if batch:
         db.bulk_insert_mappings(Hexagon, batch)
         db.commit()
         total += len(batch)
+    if on_progress:
+        on_progress(total)
     return total
 
 
