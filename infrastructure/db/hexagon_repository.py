@@ -58,17 +58,34 @@ def _to_row(data: dict) -> dict:
 
 def replace_all(db: Session, hexagons: Iterable[dict], batch_size: int = 5000) -> int:
     """
-    Reemplazo total: elimina TODO lo existente e inserta el nuevo conjunto.
-    Pensada para recargar desde una muestra del parquet. Es transaccional: si
-    falla la carga, no se pierde lo anterior (rollback).
-    """
-    rows = [_to_row(h) for h in hexagons]
+    Reemplazo total en STREAMING: borra todo e inserta por lotes, confirmando y
+    LIBERANDO memoria en cada lote. El pico de RAM es ~un lote, no el dataset
+    completo (evita el OOM que congelaba la instancia con parquets grandes).
 
+    Acepta cualquier iterable/generador de dicts, así que puede consumir
+    `iter_parquet_rows` sin materializar el parquet entero.
+
+    Nota: NO es atómico — borra primero y confirma por lote, así que durante la
+    recarga hay una ventana con la tabla parcialmente poblada. Es una operación
+    de mantenimiento (destructiva) por diseño.
+    """
     db.execute(delete(Hexagon))
-    for i in range(0, len(rows), batch_size):
-        db.bulk_insert_mappings(Hexagon, rows[i : i + batch_size])
-    db.commit()
-    return len(rows)
+    db.commit()  # libera el borrado; a partir de aquí solo crecen lotes acotados
+
+    total = 0
+    batch: list[dict] = []
+    for h in hexagons:
+        batch.append(_to_row(h))
+        if len(batch) >= batch_size:
+            db.bulk_insert_mappings(Hexagon, batch)
+            db.commit()
+            total += len(batch)
+            batch = []  # <- libera el lote
+    if batch:
+        db.bulk_insert_mappings(Hexagon, batch)
+        db.commit()
+        total += len(batch)
+    return total
 
 
 # ── CRUD ──────────────────────────────────────────────────────────────────────

@@ -33,20 +33,13 @@ def update_from_parquet(db, path: str | None = None) -> int:
     Fuente única de la carga; la usan tanto el bootstrap del warmup como la CLI.
     El parquet es solo ENTRADA DE INGESTA (residual), nunca fuente de runtime.
     `path` se resuelve en tiempo de llamada (respeta la config vigente).
+    Streaming: lee el parquet por lotes y no lo materializa entero (evita OOM).
     """
+    from infrastructure.data.parquet_reader import iter_parquet_rows
     from infrastructure.db import hexagon_repository as hexrepo
 
-    hexagons, _variable_names, _parsed_at = read_parquet(path or PARQUET_PATH)
-    payload = [
-        {
-            "h3_index": h.h3_index,
-            "score_general": h.score_general,
-            "tipo_celda": h.tipo_celda,
-            "variables": h.variables,
-        }
-        for h in hexagons
-    ]
-    return hexrepo.replace_all(db, payload)
+    rows = iter_parquet_rows(path or PARQUET_PATH)
+    return hexrepo.replace_all(db, rows)
 
 
 # ── Warmup ────────────────────────────────────────────────────────────────────
