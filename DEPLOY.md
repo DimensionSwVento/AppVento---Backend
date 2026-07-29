@@ -68,8 +68,10 @@ sudo cp deploy/vento-backend.service /etc/systemd/system/
 sudo systemctl daemon-reload
 sudo systemctl enable --now vento-backend
 ```
-Ponlo detrás de un reverse proxy (Nginx/Caddy con TLS). El backend es **privado**:
-solo el BFF Next debe alcanzarlo (escucha en `127.0.0.1`).
+El backend vive en una **red privada (VPC)** y lo consume el **BFF Next** desde otra
+instancia privada, así que escucha en `0.0.0.0:8000`. El aislamiento lo da el
+**security group** (puerto 8000 solo desde la subred/IP del BFF) — no hay ingress
+público. Auth obligatoria (`INTERNAL_API_SECRET` + Keycloak) como defensa extra.
 
 ---
 

@@ -24,9 +24,12 @@ EnvironmentFile=/opt/AppVento---Backend/.env
 # Aplica migraciones antes de arrancar (crea/actualiza las 3 tablas).
 ExecStartPre=/opt/AppVento---Backend/.venv/bin/alembic upgrade head
 
+# Bind 0.0.0.0: el backend vive en una red PRIVADA (VPC) y lo consume el BFF Next
+# desde otra instancia privada. El aislamiento lo da el security group (puerto 8000
+# solo desde la subred/IP del BFF), no el bind. NO hay ingress público.
 ExecStart=/opt/AppVento---Backend/.venv/bin/gunicorn main:app \
     -k uvicorn.workers.UvicornWorker \
-    -w 2 -b 127.0.0.1:8000 --timeout 120
+    -w 2 -b 0.0.0.0:8000 --timeout 120
 
 Restart=on-failure
 RestartSec=5
