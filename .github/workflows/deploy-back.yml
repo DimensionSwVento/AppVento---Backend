@@ -1,0 +1,75 @@
+name: Deploy back
+on:
+  push:
+    branches: [main]        # main = rama de deploy (cambia a deploy-prod si igualas la del front)
+  workflow_dispatch:
+
+jobs:
+  # ── CI: que no se despliegue algo que ni compila/importa ─────────────────────
+  ci:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"     # el código requiere 3.10+ (PEP-604)
+          cache: pip
+
+      - name: Instalar dependencias
+        run: |
+          python -m pip install -U pip
+          pip install -r requirements.txt
+
+      - name: Sanity (compila + importa la app)
+        run: |
+          python -m compileall -q domain application infrastructure api main.py shared tools migrations
+          python -c "import main"     # falla si algún import se rompió
+
+  # ── Deploy: SSH por el gate → git en el server → migrar → reiniciar ──────────
+  deploy:
+    needs: ci
+    runs-on: ubuntu-latest
+    steps:
+      - name: Configurar SSH (gate + back, red privada)
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.SSH_PRIVATE_KEY }}" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          cat >> ~/.ssh/config << EOF
+          Host gate
+            HostName ${{ secrets.SSH_GATE_HOST }}
+            Port ${{ secrets.SSH_GATE_PORT }}
+            User ${{ secrets.SSH_GATE_USER }}
+            IdentityFile ~/.ssh/id_ed25519
+            StrictHostKeyChecking no
+          Host back
+            HostName ${{ secrets.BACK_HOST }}
+            User ${{ secrets.BACK_USER }}
+            ProxyJump gate
+            IdentityFile ~/.ssh/id_ed25519
+            StrictHostKeyChecking no
+          EOF
+
+      - name: Actualizar server, migrar y reiniciar
+        run: |
+          ssh back 'set -e
+            cd /var/www/webapp/AppVento---Backend
+
+            # git respeta el .gitignore por diseño: reset --hard NO toca los
+            # archivos untracked/ignorados del server (.venv, .env, data/*.parquet).
+            git fetch --prune origin
+            git checkout main
+            git reset --hard origin/main
+
+            # deps (idempotente) + migraciones + reinicio del servicio
+            .venv/bin/pip install -q -r requirements.txt
+            .venv/bin/alembic upgrade head
+            sudo systemctl restart vento-backend
+
+            # healthcheck: falla el deploy si no responde sano
+            sleep 5
+            curl -fsS http://localhost:8000/api/health'
+
+# NOTA: la ingesta del parquet NO va aquí (es destructiva y solo cuando cambia el
+# dataset/esquema). Correr a mano: `python -m tools.ingest_parquet`.
