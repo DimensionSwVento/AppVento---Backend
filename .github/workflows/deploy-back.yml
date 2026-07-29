@@ -4,6 +4,9 @@ on:
     branches: [main]        # main = rama de deploy (cambia a deploy-prod si igualas la del front)
   workflow_dispatch:
 
+env:
+  APP_DIR: /var/www/webapp/AppVento---Backend    # ruta del repo en el server del back
+
 jobs:
   # ── CI: que no se despliegue algo que ni compila/importa ─────────────────────
   ci:
@@ -75,7 +78,7 @@ jobs:
       - name: "4/5 · El entorno del back está listo"
         run: |
           ssh back 'set -e
-            cd /var/www/webapp/AppVento---Backend
+            cd ${{ env.APP_DIR }}
             test -x .venv/bin/alembic || { echo "✗ falta .venv/bin/alembic"; exit 1; }
             test -f .env             || { echo "✗ falta .env"; exit 1; }
             systemctl is-enabled vento-backend >/dev/null 2>&1 || echo "⚠ servicio vento-backend no habilitado (se instaló?)"
@@ -84,7 +87,7 @@ jobs:
       - name: "5/5 · Deploy: git + deps + migraciones + restart + health"
         run: |
           ssh back 'set -e
-            cd /var/www/webapp/AppVento---Backend
+            cd ${{ env.APP_DIR }}
 
             # git respeta el .gitignore: reset --hard NO toca untracked/ignorados
             # (.venv, .env, data/*.parquet quedan intactos).
