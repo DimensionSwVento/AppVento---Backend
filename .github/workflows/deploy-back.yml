@@ -26,7 +26,7 @@ jobs:
           python -m compileall -q domain application infrastructure api main.py shared tools migrations
           python -c "import main"     # falla si algún import se rompió
 
-  # ── Deploy: SSH por el gate → git en el server → migrar → reiniciar ──────────
+  # ── Deploy: verifica por etapas y solo entonces despliega ────────────────────
   deploy:
     needs: ci
     runs-on: ubuntu-latest
@@ -36,40 +36,68 @@ jobs:
           mkdir -p ~/.ssh
           echo "${{ secrets.SSH_PRIVATE_KEY }}" > ~/.ssh/id_ed25519
           chmod 600 ~/.ssh/id_ed25519
+          # BatchMode=yes → nunca cae a password: falla al instante si la pubkey no sirve.
           cat >> ~/.ssh/config << EOF
           Host gate
             HostName ${{ secrets.SSH_GATE_HOST }}
             Port ${{ secrets.SSH_GATE_PORT }}
             User ${{ secrets.SSH_GATE_USER }}
             IdentityFile ~/.ssh/id_ed25519
+            BatchMode yes
+            ConnectTimeout 15
             StrictHostKeyChecking no
           Host back
             HostName ${{ secrets.BACK_HOST }}
             User ${{ secrets.BACK_USER }}
             ProxyJump gate
             IdentityFile ~/.ssh/id_ed25519
+            BatchMode yes
+            ConnectTimeout 15
             StrictHostKeyChecking no
           EOF
 
-      - name: Actualizar server, migrar y reiniciar
+      - name: "1/5 · La clave privada del secret es válida"
+        run: |
+          ssh-keygen -y -f ~/.ssh/id_ed25519 > /dev/null \
+            && echo "✓ clave privada parsea (secret bien formado)" \
+            || { echo "✗ SSH_PRIVATE_KEY malformado (¿falta el salto final / BEGIN-END?)"; exit 1; }
+
+      - name: "2/5 · Conecta al gate (host + puerto + clave)"
+        run: |
+          ssh gate 'echo "✓ gate OK — soy $(whoami)@$(hostname)"' \
+            || { echo "✗ No entra al GATE. Revisa SSH_GATE_HOST/PORT/USER y que la pública esté en su authorized_keys."; exit 1; }
+
+      - name: "3/5 · Alcanza el back por el gate (IP interna)"
+        run: |
+          ssh back 'echo "✓ back OK — soy $(whoami)@$(hostname) · IP $(hostname -I | awk "{print \$1}")"' \
+            || { echo "✗ Entra al gate pero NO al BACK. Revisa BACK_HOST (IP privada)/BACK_USER, su authorized_keys y que el gate pueda rutear al back."; exit 1; }
+
+      - name: "4/5 · El entorno del back está listo"
+        run: |
+          ssh back 'set -e
+            cd /var/www/webapp/AppVento---Backend
+            test -x .venv/bin/alembic || { echo "✗ falta .venv/bin/alembic"; exit 1; }
+            test -f .env             || { echo "✗ falta .env"; exit 1; }
+            systemctl is-enabled vento-backend >/dev/null 2>&1 || echo "⚠ servicio vento-backend no habilitado (se instaló?)"
+            echo "✓ entorno OK (venv, .env, repo)"'
+
+      - name: "5/5 · Deploy: git + deps + migraciones + restart + health"
         run: |
           ssh back 'set -e
             cd /var/www/webapp/AppVento---Backend
 
-            # git respeta el .gitignore por diseño: reset --hard NO toca los
-            # archivos untracked/ignorados del server (.venv, .env, data/*.parquet).
+            # git respeta el .gitignore: reset --hard NO toca untracked/ignorados
+            # (.venv, .env, data/*.parquet quedan intactos).
             git fetch --prune origin
             git checkout main
             git reset --hard origin/main
 
-            # deps (idempotente) + migraciones + reinicio del servicio
             .venv/bin/pip install -q -r requirements.txt
             .venv/bin/alembic upgrade head
             sudo systemctl restart vento-backend
 
-            # healthcheck: falla el deploy si no responde sano
             sleep 5
-            curl -fsS http://localhost:8000/api/health'
+            curl -fsS http://localhost:8000/api/health && echo "" && echo "✓ deploy OK, backend sano"'
 
 # NOTA: la ingesta del parquet NO va aquí (es destructiva y solo cuando cambia el
 # dataset/esquema). Correr a mano: `python -m tools.ingest_parquet`.
