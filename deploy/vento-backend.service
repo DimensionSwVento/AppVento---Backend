@@ -19,7 +19,9 @@ Type=exec
 User=vento
 Group=vento
 WorkingDirectory=/opt/AppVento---Backend
-EnvironmentFile=/opt/AppVento---Backend/.env
+# NO usamos EnvironmentFile a propósito: en SELinux (AlmaLinux) systemd (init_t) no
+# puede leer un .env bajo /var/www → "Failed to load environment files". La app YA
+# carga el .env sola (load_dotenv desde WorkingDirectory), así que no hace falta.
 
 # Aplica migraciones antes de arrancar (crea/actualiza las 3 tablas).
 ExecStartPre=/opt/AppVento---Backend/.venv/bin/alembic upgrade head
