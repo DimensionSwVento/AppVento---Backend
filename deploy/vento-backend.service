@@ -1,0 +1,40 @@
+# systemd unit para desplegar Vento sin Docker (bare-metal / VM).
+#
+# Instalación:
+#   sudo cp deploy/vento-backend.service /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now vento-backend
+#   sudo systemctl status vento-backend
+#
+# Ajusta User, WorkingDirectory y las rutas del venv a tu servidor.
+# Requiere: venv en .venv con requirements instalados y .env configurado.
+
+[Unit]
+Description=Vento Backend (FastAPI)
+After=network.target postgresql.service
+Wants=postgresql.service
+
+[Service]
+Type=exec
+User=vento
+Group=vento
+WorkingDirectory=/opt/AppVento---Backend
+# NO usamos EnvironmentFile a propósito: en SELinux (AlmaLinux) systemd (init_t) no
+# puede leer un .env bajo /var/www → "Failed to load environment files". La app YA
+# carga el .env sola (load_dotenv desde WorkingDirectory), así que no hace falta.
+
+# Aplica migraciones antes de arrancar (crea/actualiza las 3 tablas).
+ExecStartPre=/opt/AppVento---Backend/.venv/bin/alembic upgrade head
+
+# Bind 0.0.0.0: el backend vive en una red PRIVADA (VPC) y lo consume el BFF Next
+# desde otra instancia privada. El aislamiento lo da el security group (puerto 8000
+# solo desde la subred/IP del BFF), no el bind. NO hay ingress público.
+ExecStart=/opt/AppVento---Backend/.venv/bin/gunicorn main:app \
+    -k uvicorn.workers.UvicornWorker \
+    -w 2 -b 0.0.0.0:8000 --timeout 120
+
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

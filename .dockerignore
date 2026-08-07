@@ -1,0 +1,13 @@
+.git
+.gitignore
+.venv
+venv
+__pycache__
+**/__pycache__
+*.pyc
+.env
+*.md
+!README.md
+# El parquet se monta como volumen; no lo horneamos en la imagen.
+data/*.parquet
+.claude
