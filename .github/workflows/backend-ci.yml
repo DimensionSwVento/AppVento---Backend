@@ -1,0 +1,127 @@
+# CI del backend (FastAPI). Espejo de `frontend-ci.yml` del repo AppVento.
+#
+# No requiere secrets del repositorio: los tests usan una fuente de hexágonos fake
+# y autenticación por header interno (sin Postgres ni Keycloak).
+#
+# NOTA: la política de Actions de la organización sólo permite actions de repos
+# propios de DimensionSwVento, así que este workflow NO usa ninguna action de
+# marketplace (ni siquiera actions/checkout): el checkout se hace con git +
+# github.token y Python sale del runner (ubuntu-latest trae Python 3.10+).
+name: Backend CI
+
+on:
+  workflow_dispatch:
+  pull_request:
+    branches: [develop, main]
+  push:
+    branches: [main]
+
+concurrency:
+  group: backend-ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint:
+    name: Lint (ruff)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout (sin actions de marketplace)
+        run: |
+          git init -q .
+          git remote add origin "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+          git fetch -q --depth 1 origin "$GITHUB_SHA"
+          git checkout -q FETCH_HEAD
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+      - name: Setup Python
+        run: |
+          python3 -m venv .venv
+          .venv/bin/pip install --quiet --upgrade pip
+          .venv/bin/pip install --quiet -r requirements.txt -r requirements-dev.txt
+      - run: .venv/bin/ruff check
+
+  unit:
+    name: Unit + integration tests + coverage
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: vento
+          POSTGRES_PASSWORD: vento
+          POSTGRES_DB: vento
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U vento -d vento"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    steps:
+      - name: Checkout (sin actions de marketplace)
+        run: |
+          git init -q .
+          git remote add origin "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+          git fetch -q --depth 1 origin "$GITHUB_SHA"
+          git checkout -q FETCH_HEAD
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+      - name: Setup Python
+        run: |
+          python3 -m venv .venv
+          .venv/bin/pip install --quiet --upgrade pip
+          .venv/bin/pip install --quiet -r requirements.txt -r requirements-dev.txt
+      # El reporter de pytest-cov imprime el resumen de cobertura en el log del job.
+      # El umbral `fail_under = 80` está en pyproject.toml (política ratchet).
+      # Los tests de integración se conectan al servicio `postgres` (host localhost:5432).
+      - name: Run tests with coverage
+        env:
+          TEST_DATABASE_URL: postgresql+psycopg://vento:vento@localhost:5432/vento
+        run: .venv/bin/python -m pytest --cov
+
+  build:
+    name: Build / import smoke
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout (sin actions de marketplace)
+        run: |
+          git init -q .
+          git remote add origin "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+          git fetch -q --depth 1 origin "$GITHUB_SHA"
+          git checkout -q FETCH_HEAD
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+      - name: Setup Python
+        run: |
+          python3 -m venv .venv
+          .venv/bin/pip install --quiet --upgrade pip
+          .venv/bin/pip install --quiet -r requirements.txt -r requirements-dev.txt
+      - name: Compile all
+        run: .venv/bin/python -m compileall -q domain application infrastructure api shared main.py tools
+      - name: Import smoke
+        run: .venv/bin/python -c "import main; import api.routers.tiles; import api.routers.historial; import application.services.tile_service; print('imports ok')"
+
+  secrets:
+    name: Secret scan (gitleaks)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout (sin actions de marketplace)
+        run: |
+          git init -q .
+          git remote add origin "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+          git fetch -q --depth 1 origin "$GITHUB_SHA"
+          git checkout -q FETCH_HEAD
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+      - name: Instalar gitleaks
+        run: |
+          set -euo pipefail
+          # URL FIJA a la versión (NO `latest/download`, que sirve los assets del
+          # release más nuevo). Se baja a archivo y se valida.
+          wget -q -O gitleaks.tar.gz \
+            https://github.com/gitleaks/gitleaks/releases/download/v8.24.3/gitleaks_8.24.3_linux_x64.tar.gz
+          tar xzf gitleaks.tar.gz -C /usr/local/bin gitleaks
+          gitleaks version
+        working-directory: /tmp
+      - name: Scan de secretos
+        run: gitleaks detect --source . --no-git --redact --config .gitleaks.toml --verbose
