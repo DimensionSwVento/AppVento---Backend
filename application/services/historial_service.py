@@ -6,6 +6,7 @@ límite. La lógica de BD vive en `infrastructure/db/repository`.
 from __future__ import annotations
 from sqlalchemy.orm import Session
 
+from application.services import master_service
 from infrastructure.db import repository
 from infrastructure.db.models import Informe
 from shared import config
@@ -24,6 +25,8 @@ def save_for_user(db: Session, user_id: str, payload: dict) -> dict:
         "scores_snapshot": payload.get("scores") or payload.get("scores_snapshot") or {},
         "region": payload.get("region"),
         "area_km2": float(payload.get("areaKm2") or payload.get("area_km2") or 0.0),
+        # Trazabilidad: versión de la master vigente al generar el informe.
+        "master_version": master_service.current_version_label(db),
     }
     inf = repository.create_informe(db, user_id, data)
     # Rotación: conservar solo los N más recientes por usuario.
@@ -47,4 +50,5 @@ def _to_dict(i: Informe) -> dict:
         "scores": i.scores_snapshot,
         "region": i.region,
         "areaKm2": i.area_km2,
+        "masterVersion": i.master_version,
     }

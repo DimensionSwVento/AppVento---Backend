@@ -9,10 +9,15 @@ el tamaño del dataset.
 La ingesta (`update_from_parquet`) vive aquí porque comparte el lector del parquet.
 """
 from __future__ import annotations
+import hashlib
+import logging
 from typing import Optional
 
-from shared.config import PARQUET_PATH, HEXAGON_INGEST
-from infrastructure.data.variable_catalog import dimension_of, get_variable_label
+from shared.config import PARQUET_PATH, HEXAGON_INGEST, OFFSHORE_VAR
+from infrastructure.data.variable_catalog import dimension_of, get_variable_label, base_code
+from infrastructure.data import model_weights
+
+log = logging.getLogger("vento")
 
 from domain.query_engine import geo, aggregator, variable_engine
 from domain.query_engine.scoring import zoom_to_h3_res
@@ -104,9 +109,22 @@ def get_tile(source: HexagonSource, z: int, x: int, y: int,
         value = None
         if var:
             value, _ = variable_engine.resolve_value(hx, var, available, var_range, "raw")
+        # Mar/tierra por hex si la master trae la columna configurada (nombre TBD).
+        off = _offshore_flag(hx.variables) if OFFSHORE_VAR else None
         out.append(TileHex(h=hx.h3_index, s=hx.score_general, t=hx.tipo_celda,
-                           la=hx.lat, ln=hx.lng, v=value))
+                           la=hx.lat, ln=hx.lng, v=value, off=off))
     return out
+
+
+def _offshore_flag(variables: dict) -> Optional[int]:
+    """1/0 mar/tierra desde la columna `OFFSHORE_VAR` de la master (o None)."""
+    raw = variables.get(OFFSHORE_VAR)
+    if raw is None:
+        return None
+    try:
+        return 1 if float(raw) >= 0.5 else 0
+    except (TypeError, ValueError):
+        return None
 
 
 # ── Heatmap de área ───────────────────────────────────────────────────────────
@@ -124,6 +142,67 @@ def get_area_heatmap(source: HexagonSource, polygon: Optional[list], var: str,
     for hx in rows:
         _, value_norm = variable_engine.resolve_value(hx, var, available, var_range, "normalized")
         out.append({"h": hx.h3_index, "value": value_norm})
+    return out
+
+
+# BBox aproximado de Colombia (continental + insular). Fallback si el front no
+# manda uno — devuelve la variable para todo el país (puede ser pesado; el front
+# debería mandar el bbox del viewport para acotar).
+_COLOMBIA_BBOX = {"west": -82.5, "south": -4.5, "east": -66.0, "north": 13.6}
+
+
+def _resolve_code(available: list[str], code: str, subtemplate: bool) -> tuple[Optional[str], bool]:
+    """
+    Resuelve el `code` pedido contra las variables disponibles en la tabla.
+    - Casa directo o por código base (`TEC-004-T`→`TEC_004`).
+    - Si NO casa y `subtemplate` está activo, elige uno AL AZAR DETERMINISTA
+      (por el propio `code`) de los disponibles → así, mientras no se sepa qué
+      código es viento/densidad, el mapa muestra datos reales de ALGUNA variable
+      (cada `code` mapea siempre al mismo, y códigos distintos a distintos).
+    Devuelve `(código_efectivo | None, es_subtemplate)`.
+    """
+    if not available:
+        return None, False
+    target = base_code(code.replace("-", "_"))
+    for a in available:
+        if a == code or base_code(a) == target:
+            return a, False
+    if not subtemplate:
+        return None, False
+    ordered = sorted(available)
+    idx = int(hashlib.md5(code.encode("utf-8")).hexdigest(), 16) % len(ordered)
+    return ordered[idx], True
+
+
+def get_variable_layer(source: HexagonSource, code: str,
+                       bbox: Optional[dict] = None,
+                       threshold: float = 0.0,
+                       subtemplate: bool = False) -> list[dict]:
+    """
+    Capa de una variable a nivel país/bbox en res8 (US04-03 · `map-res8-contract`):
+    `[{h3_index, value}]` con el valor normalizado 0–1 donde la variable está
+    presente, acotado por bbox y umbral. Sin bbox usa Colombia entera.
+
+    `subtemplate`: si el `code` no se reconoce, usa una variable disponible al
+    azar (determinista) — modo puente hasta conocer el mapeo real de códigos.
+    """
+    b = bbox or _COLOMBIA_BBOX
+    rows = source.fetch_bbox(b["west"], b["south"], b["east"], b["north"])
+    available = source.variable_names()
+    eff_code, is_sub = _resolve_code(available, code, subtemplate)
+    if eff_code is None:
+        return []  # código no reconocido y sin subtemplate → nada que pintar
+    if is_sub:
+        log.info("tiles/variable: '%s' no reconocido → subtemplate '%s'.", code, eff_code)
+    var_range = source.variable_range(eff_code)
+    out: list[dict] = []
+    for hx in rows:
+        _, value_norm = variable_engine.resolve_value(
+            hx, eff_code, available, var_range, "normalized"
+        )
+        if value_norm is None or value_norm < threshold:
+            continue  # variable ausente en el hex o bajo el umbral
+        out.append({"h3_index": hx.h3_index, "value": value_norm})
     return out
 
 
@@ -150,19 +229,38 @@ def get_area_report(source: HexagonSource, polygon: Optional[list] = None,
     out: list[AreaHex] = []
     for hx in rows:
         scores: dict[str, float] = {}
+        gen_num = 0.0  # Σ(peso_dim · score_dim)
+        gen_den = 0.0  # Σ peso_dim
         for cat, cat_vars in vars_by_cat.items():
-            norm_vals: list[float] = []
+            # score_dim = Σ(peso_var · valor_norm) / Σ peso_var  (WLC/AHP).
+            num = 0.0
+            den = 0.0
             for var in cat_vars:
                 raw = variable_engine.get_variable_value(hx, var)
                 rng = ranges.get(var)
                 if raw is not None and rng:
-                    norm_vals.append(variable_engine.normalize(raw, rng["min"], rng["max"]))
-            if norm_vals:
-                scores[cat] = round(sum(norm_vals) / len(norm_vals), 4)
+                    norm = variable_engine.normalize(raw, rng["min"], rng["max"])
+                    w = model_weights.variable_weight(var)
+                    num += w * norm
+                    den += w
+            if den > 0:
+                score_cat = round(num / den, 4)
+                scores[cat] = score_cat
+                wd = model_weights.dimension_weight(cat)
+                gen_num += wd * score_cat
+                gen_den += wd
+
+        # índice general = Σ(peso_dim · score_dim) / Σ peso_dim. Si la master ya
+        # trae un score_general (> 0), se respeta; si no, se usa el calculado.
+        computed_general = round(gen_num / gen_den, 4) if gen_den > 0 else 0.0
+        score_general = (
+            hx.score_general if hx.score_general and hx.score_general > 0
+            else computed_general
+        )
 
         out.append(AreaHex(
             h3_index=hx.h3_index, lat=hx.lat, lng=hx.lng,
-            score_general=hx.score_general, scores=scores,
+            score_general=score_general, scores=scores,
             tipo_celda=hx.tipo_celda, variables=hx.variables,
         ))
     return out

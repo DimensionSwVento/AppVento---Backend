@@ -20,13 +20,16 @@ class HexagonData:
 
 @dataclass
 class TileHex:
-    """Hex compacto para el tile del mapa (payload liviano: claves cortas)."""
+    """Hex compacto para el tile del mapa (payload liviano: claves cortas).
+    `t` = tipo_celda (disponible/excluida). `off` = mar/tierra (1/0) si la master
+    trae la columna offshore (nombre configurable, aún por definir)."""
     h: str
     s: float
     t: str
     la: float
     ln: float
     v: Optional[float] = None
+    off: Optional[int] = None
 
 
 @dataclass

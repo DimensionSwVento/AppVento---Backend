@@ -134,3 +134,17 @@ def require_role(role: str):
         return user
 
     return _guard
+
+
+def require_admin(user: CurrentUser = Depends(require_user)) -> CurrentUser:
+    """
+    Guard de admin sobre el guard DUAL (`require_user`): acepta tanto la vía BFF
+    interno (con `X-User-Roles` que trae `admin`) como el JWT directo, y exige el
+    rol `admin`. Para el catálogo de administración (US08-01/02/03).
+    """
+    if not user.has_role("admin"):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Requiere el rol 'admin'",
+        )
+    return user

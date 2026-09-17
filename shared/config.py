@@ -64,3 +64,9 @@ MAX_HISTORIAL_PER_USER: int = int(os.getenv("MAX_HISTORIAL_PER_USER", "50"))
 # "copy" (por defecto): COPY de Postgres, rápido y atómico. "orm": fallback
 # portable por lotes (para entornos sin COPY, p.ej. tests).
 HEXAGON_INGEST: str = os.getenv("HEXAGON_INGEST", "copy")
+
+# ── Mar/tierra (offshore) ─────────────────────────────────────────────────────
+# Código de la variable/columna de la master que marca mar(1)/tierra(0) por hex.
+# El nombre real está por definir (memoria `datos-requeridos §1.4`); vacío = el
+# tile no expone `off` hasta que se configure.
+OFFSHORE_VAR: str = os.getenv("OFFSHORE_VAR", "")

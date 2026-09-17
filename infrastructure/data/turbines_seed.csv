@@ -1,0 +1,4 @@
+id,label,detail,potencia_min_mw,potencia_max_mw,area_por_aero_km2,espaciamiento_m
+S,S,Turbina pequeña · 1 kW – 100 kW,0.001,0.1,0.3,300
+M,M,Turbina mediana · 100 kW – 1 MW,0.1,1.0,0.6,500
+L,L,Turbina grande · 1 MW o más (utility),1.0,0,1.0,800

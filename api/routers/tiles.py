@@ -78,6 +78,29 @@ def get_area_heatmap(
     return tile_service.get_area_heatmap(source, polygon, var, resolution, hexes)
 
 
+@router.post("/variable", dependencies=_auth)
+def get_variable_layer(
+    payload: dict = Body(...),
+    source: HexagonSource = Depends(get_hexagon_source),
+):
+    """
+    Capa de UNA variable en res8 a nivel país/bbox (US04-03). Alimenta el heatmap
+    de viento y la cobertura de áreas del mapa del frontend.
+    Body: `{ code, bbox?: {west,south,east,north}, threshold? }`
+    → `[{ h3_index, value }]` (value normalizado 0–1).
+    """
+    code = payload.get("code") or payload.get("var")
+    if not code:
+        raise HTTPException(status_code=400, detail="Falta 'code'")
+    bbox = payload.get("bbox")
+    threshold = float(payload.get("threshold") or 0.0)
+    subtemplate = bool(payload.get("subtemplate") or False)
+    return JSONResponse(
+        content=tile_service.get_variable_layer(source, code, bbox, threshold, subtemplate),
+        headers={"Cache-Control": "public, max-age=3600"},
+    )
+
+
 @router.post("/area", dependencies=_auth)
 def get_area(
     payload: dict = Body(...),

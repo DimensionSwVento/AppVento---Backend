@@ -35,10 +35,21 @@ LABELS: dict[str, str] = {
 
 
 def base_code(code: str) -> str:
-    """`TEC_001_sv001` → `TEC_001`;  `TEC_005` → `TEC_005`."""
+    """
+    Reduce un código a su base `DIM_NNN`, quitando TODA variante/sufijo del parquet
+    (`_svNNN`, `_onshore`, `_dist`, `_t`, `_alert`, `_s`, `_sr`, `_se`, `_tse`,
+    `_ser`, …). Así casa la columna de la master con el `master_id` del catálogo.
+
+        TEC_004_sv003 → TEC_004    TEC_023_onshore → TEC_023
+        TEC_032_dist  → TEC_032    SOC_010_tse     → SOC_010
+        TEC_001_alert → TEC_001    AMB_005         → AMB_005
+
+    Códigos que NO son `DIM_NNN` (h3_index, global, recurso_eolico, excluido,
+    alerta) se devuelven tal cual.
+    """
     parts = code.split("_")
-    if len(parts) >= 3 and parts[-1].startswith("sv"):
-        return "_".join(parts[:-1])
+    if len(parts) >= 2 and parts[0].isalpha() and parts[1].isdigit():
+        return f"{parts[0]}_{parts[1]}"
     return code
 
 

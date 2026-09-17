@@ -15,7 +15,8 @@ from collections.abc import Callable, Iterable
 from datetime import datetime, timezone
 
 from psycopg.types.json import Jsonb
-from sqlalchemy import delete, func, select
+from sqlalchemy import delete, func, select, text
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import Session
 
 from domain.models.hexagon import HexagonData
@@ -56,6 +57,14 @@ def _to_row(data: dict) -> dict:
         "lat": data.get("lat"),
         "lng": data.get("lng"),
         "variables": _clean_variables(data.get("variables")),
+        # Bundle del modelo: scores precalculados por criterio/subcriterio +
+        # emplazamiento de origen (onshore/offshore). Vacíos por defecto → la
+        # ingesta clásica de un solo parquet sigue funcionando igual.
+        "scores": _clean_variables(data.get("scores")),
+        "emplazamiento": str(data.get("emplazamiento") or "onshore"),
+        # Explícito: los caminos Core/text (upsert/blue-green) no aplican el
+        # default Python del ORM, así que fijamos el timestamp de la corrida.
+        "updated_at": datetime.now(timezone.utc),
     }
 
 
@@ -194,6 +203,122 @@ def replace_all(
     if on_progress:
         on_progress(total)
     return total
+
+
+# ── Ingesta SEGURA (no frena la generación de informes) ───────────────────────
+
+def _upsert_batch(db: Session, batch: list[dict]) -> None:
+    """UPSERT por `h3_index` (INSERT … ON CONFLICT DO UPDATE). Postgres."""
+    if not batch:
+        return
+    stmt = pg_insert(Hexagon.__table__).values(batch)
+    cols = [k for k in batch[0].keys() if k != "h3_index"]
+    set_ = {c: stmt.excluded[c] for c in cols}
+    set_["updated_at"] = func.now()
+    db.execute(stmt.on_conflict_do_update(index_elements=["h3_index"], set_=set_))
+
+
+def upsert_all(
+    db: Session,
+    hexagons: Iterable[dict],
+    batch_size: int = 5000,
+    on_progress: Callable[[int], None] | None = None,
+) -> int:
+    """
+    Ingesta NO destructiva (lo que dispara la INTERFAZ): actualiza los hex
+    existentes y añade los nuevos por lotes, SIN borrar. Así subir millones de
+    filas no deja la tabla vacía ni frena los informes. `hexagon_meta` se
+    reemplaza al final con los rangos vistos en esta corrida.
+    """
+    total = 0
+    meta: dict[str, list[float]] = {}
+    batch: list[dict] = []
+    for h in hexagons:
+        row = _to_row(h)
+        _accumulate_meta(meta, row["variables"])
+        batch.append(row)
+        if len(batch) >= batch_size:
+            _upsert_batch(db, batch)
+            db.commit()
+            total += len(batch)
+            batch = []
+            if on_progress:
+                on_progress(total)
+    if batch:
+        _upsert_batch(db, batch)
+        db.commit()
+        total += len(batch)
+    _write_meta(db, meta)
+    db.commit()
+    if on_progress:
+        on_progress(total)
+    return total
+
+
+def blue_green_replace(
+    db: Session,
+    hexagons: Iterable[dict],
+    batch_size: int = 5000,
+    on_progress: Callable[[int], None] | None = None,
+) -> int:
+    """
+    Ingesta DESTRUCTIVA SEGURA (lo que corre por CONSOLA en prod): carga TODO en
+    una tabla nueva `hexagon_new` y al final hace un SWAP atómico por rename,
+    dejando la anterior como BACKUP (`hexagon_backup`). La app lee `hexagon`
+    durante toda la carga (nunca ve datos a medio cargar ni se frena). Postgres.
+    """
+    db.execute(text("DROP TABLE IF EXISTS hexagon_new"))
+    db.execute(text("CREATE TABLE hexagon_new (LIKE hexagon INCLUDING ALL)"))
+    db.commit()
+
+    total = 0
+    meta: dict[str, list[float]] = {}
+    batch: list[dict] = []
+
+    def flush() -> None:
+        nonlocal total, batch
+        if not batch:
+            return
+        # INSERT directo en `hexagon_new` (mismo shape de columnas que Hexagon).
+        keys = list(batch[0].keys())
+        cols = ", ".join(keys)
+        placeholders = ", ".join(f":{k}" for k in keys)
+        db.execute(text(f"INSERT INTO hexagon_new ({cols}) VALUES ({placeholders})"),
+                   [_pg_row(r) for r in batch])
+        db.commit()
+        total += len(batch)
+        batch = []
+        if on_progress:
+            on_progress(total)
+
+    for h in hexagons:
+        row = _to_row(h)
+        _accumulate_meta(meta, row["variables"])
+        batch.append(row)
+        if len(batch) >= batch_size:
+            flush()
+    flush()
+
+    # SWAP atómico: hexagon → backup, hexagon_new → hexagon.
+    db.execute(text("DROP TABLE IF EXISTS hexagon_backup CASCADE"))
+    db.execute(text("ALTER TABLE hexagon RENAME TO hexagon_backup"))
+    db.execute(text("ALTER TABLE hexagon_new RENAME TO hexagon"))
+    db.commit()
+
+    _write_meta(db, meta)
+    db.commit()
+    if on_progress:
+        on_progress(total)
+    return total
+
+
+def _pg_row(row: dict) -> dict:
+    """Adapta un `_to_row` para el INSERT textual: dicts JSONB → Jsonb()."""
+    out = dict(row)
+    for k in ("variables", "scores"):
+        if k in out and out[k] is not None:
+            out[k] = Jsonb(out[k])
+    return out
 
 
 # ── CRUD ──────────────────────────────────────────────────────────────────────

@@ -1,0 +1,4 @@
+id,label,description,horizonte,mult,impacto
+base,Base,Evolución tendencial del mercado según supuestos centrales.,10,1.03,"Ilustrativo: considerando todas las variables, el proyecto se podría mantener con retornos estables en el horizonte central."
+optimista,Optimista,Mayor demanda y precios al alza (transición energética acelerada).,10,1.06,"Ilustrativo: con demanda y precios al alza, todas las variables juntas proyectan un margen creciente y mayor resiliencia del proyecto."
+conservador,Conservador,Crecimiento moderado con precios contenidos.,10,0.99,"Ilustrativo: con precios contenidos, el proyecto se podría mantener en el punto de equilibrio si se optimizan las variables de mayor peso."

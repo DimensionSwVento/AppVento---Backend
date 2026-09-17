@@ -8,6 +8,7 @@ Punto de entrada del backend Vento (FastAPI).
 - Histórico: persiste los informes por usuario en Postgres.
 """
 from __future__ import annotations
+import asyncio
 import logging
 from contextlib import asynccontextmanager
 
@@ -18,7 +19,12 @@ from fastapi.middleware.cors import CORSMiddleware
 from shared import config
 from infrastructure.db.session import init_db, SessionLocal
 from infrastructure.db.hexagon_query_repository import PostgresHexagonSource
-from api.routers import historial, tiles
+from infrastructure.db.catalog_seed import seed_catalog
+from application.services import master_service, catalog_ingest
+from api.routers import admin_catalog, admin_master, admin_bundle, historial, tiles
+
+# Cada cuánto revisa el scheduler si hay una actualización de master programada.
+_MASTER_TICK_SECONDS = 60
 
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger("vento")
@@ -49,6 +55,14 @@ async def lifespan(_app: FastAPI):
     try:
         init_db()
         log.info("DB lista.")
+        # Semilla del catálogo admin (normas/escenarios) — idempotente.
+        db = SessionLocal()
+        try:
+            seed_catalog(db)
+            # Persiste dónde se guarda cada fuente (master/CSV/JSON) + su estado.
+            catalog_ingest.sync_sources(db)
+        finally:
+            db.close()
     except Exception as exc:  # la DB puede no estar arriba en dev
         log.warning("No se pudo inicializar la DB: %s", exc)
 
@@ -58,7 +72,31 @@ async def lifespan(_app: FastAPI):
     except Exception as exc:
         log.warning("Chequeo de arranque falló: %s", exc)
 
+    # 3) Scheduler de master: tick de fondo que ejecuta las actualizaciones
+    #    programadas cuando llega su hora (no hay scheduler externo).
+    scheduler_task = asyncio.create_task(_master_scheduler_loop())
+
     yield  # ── app en ejecución ──
+
+    scheduler_task.cancel()
+
+
+async def _master_scheduler_loop() -> None:
+    while True:
+        try:
+            db = SessionLocal()
+            try:
+                await run_in_threadpool(master_service.run_due, db)
+            finally:
+                db.close()
+        except asyncio.CancelledError:
+            break
+        except Exception as exc:  # noqa: BLE001
+            log.warning("Tick del scheduler de master falló: %s", exc)
+        try:
+            await asyncio.sleep(_MASTER_TICK_SECONDS)
+        except asyncio.CancelledError:
+            break
 
 
 app = FastAPI(title="Vento API", version="2.0", lifespan=lifespan)
@@ -74,6 +112,9 @@ app.add_middleware(
 # Todos los endpoints cuelgan de /api (coincide con el rewrite del frontend).
 app.include_router(tiles.router, prefix="/api")
 app.include_router(historial.router, prefix="/api")
+app.include_router(admin_catalog.router, prefix="/api")
+app.include_router(admin_master.router, prefix="/api")
+app.include_router(admin_bundle.router, prefix="/api")
 
 
 @app.get("/api/health", tags=["health"])

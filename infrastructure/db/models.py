@@ -3,8 +3,9 @@ e hexágono (espejo persistido del `.parquet`, fuente de runtime del mapa)."""
 from __future__ import annotations
 import uuid
 from datetime import datetime, timezone
+from typing import Optional
 
-from sqlalchemy import DateTime, Float, ForeignKey, String
+from sqlalchemy import Boolean, DateTime, Float, ForeignKey, Integer, String
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -53,6 +54,39 @@ class Informe(Base):
     scores_snapshot: Mapped[dict] = mapped_column(JSONB, default=dict)
     region: Mapped[str | None] = mapped_column(String, nullable=True)
     area_km2: Mapped[float] = mapped_column(Float, default=0.0)
+    # Versión de la MASTER con la que se generó el informe (trazabilidad: qué
+    # datos vio). Se estampa al guardar (ver historial_service).
+    master_version: Mapped[str | None] = mapped_column(String, nullable=True)
+
+
+class MasterVersion(Base):
+    """
+    Versión de la MASTER (dataset de hexágonos). Cada actualización crea una fila
+    con su estado y momento de aplicación. La versión ACTIVA = la más reciente en
+    estado `ready`. Los informes referencian la versión con la que se generaron.
+
+    Estados: `ready` (aplicada y vigente) · `updating` (ingesta en curso —
+    los informes sacados mientras tanto pueden salir inconsistentes) ·
+    `scheduled` (programada para `scheduled_at`) · `failed`.
+    """
+    __tablename__ = "master_version"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True, default=_uuid)
+    version: Mapped[str] = mapped_column(String)  # etiqueta legible (ej. "2026-09-12T18:00")
+    status: Mapped[str] = mapped_column(String, default="ready")
+    source: Mapped[str | None] = mapped_column(String, nullable=True)  # ruta parquet
+    scheduled_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    applied_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True, index=True
+    )
+    hex_count: Mapped[int] = mapped_column(Integer, default=0)
+    var_count: Mapped[int] = mapped_column(Integer, default=0)
+    notes: Mapped[str | None] = mapped_column(String, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_now, index=True
+    )
 
 
 class Hexagon(Base):
@@ -79,9 +113,142 @@ class Hexagon(Base):
     lat: Mapped[float | None] = mapped_column(Float, nullable=True, index=True)
     lng: Mapped[float | None] = mapped_column(Float, nullable=True, index=True)
     variables: Mapped[dict] = mapped_column(JSONB, default=dict)
+    # Scores PRECALCULADOS del modelo (bundle): por criterio/subcriterio. `global`
+    # va aparte en `score_general`. JSONB para no acoplar el esquema a los criterios.
+    scores: Mapped[dict] = mapped_column(JSONB, default=dict)
+    # Emplazamiento del bundle de origen (onshore ahora; offshore = bundle futuro).
+    emplazamiento: Mapped[str] = mapped_column(String, default="onshore", index=True)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=_now, onupdate=_now
     )
+
+
+class CatalogVariable(Base):
+    """
+    Catálogo de administración de variables (US08-01). Persiste el detalle y los
+    overrides que el admin edita (habilitar, ver-en-mapa/menú, dataset). Las del
+    modelo (`tipo="modelo"`) NO se deshabilitan; las informativas sí, y se pueden
+    crear. `id` es el slug del catálogo (ej. "wpd", "turbulencia").
+    """
+    __tablename__ = "catalog_variable"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    label: Mapped[str] = mapped_column(String)
+    dimension: Mapped[str] = mapped_column(String)
+    dimension_label: Mapped[str] = mapped_column(String, default="")
+    tipo: Mapped[str] = mapped_column(String, default="informativa")  # modelo|informativa
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    en_mapa: Mapped[bool] = mapped_column(Boolean, default=False)
+    en_menu: Mapped[bool] = mapped_column(Boolean, default=True)
+    excluyente: Mapped[bool] = mapped_column(Boolean, default=False)
+    fuente: Mapped[str] = mapped_column(String, default="Por definir")
+    unidad: Mapped[str] = mapped_column(String, default="")
+    rango: Mapped[str] = mapped_column(String, default="")
+    descripcion: Mapped[str] = mapped_column(String, default="")
+    dataset_version: Mapped[str] = mapped_column(String, default="v1.0")
+    dataset_updated_at: Mapped[str] = mapped_column(String, default="")
+    # ── Datos reales por-variable que ANTES estaban hardcodeados en el front
+    #    (variablesCatalog.ts / variableWeights.ts / mapLayerData.ts). Se editan
+    #    desde el panel de admin y persisten (a diferencia de la master, que se
+    #    reingesta). El seam del front los prefiere sobre el template.
+    master_id: Mapped[str] = mapped_column(String, default="NA")     # p.ej. "TEC.001"
+    criterio: Mapped[str] = mapped_column(String, default="")
+    subcriterio: Mapped[str] = mapped_column(String, default="")
+    aplica_en: Mapped[str] = mapped_column(String, default="")        # ""|mar|tierra
+    no_calculo: Mapped[bool] = mapped_column(Boolean, default=False)  # informativa: no puntúa
+    polaridad: Mapped[int] = mapped_column(Integer, default=0)        # +1 suma / -1 resta / 0
+    peso: Mapped[float] = mapped_column(Float, default=1.0)           # |peso| en el WLC
+    map_kind: Mapped[str] = mapped_column(String, default="")         # ""|heatmap|zona
+    map_threshold: Mapped[float] = mapped_column(Float, default=0.0)  # umbral heatmap
+
+
+class Norma(Base):
+    """Norma regulatoria del catálogo (US08-02). Alimenta el semáforo del informe."""
+    __tablename__ = "catalog_norma"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True, default=_uuid)
+    nombre: Mapped[str] = mapped_column(String)
+    descripcion: Mapped[str] = mapped_column(String, default="")
+    # aplica | tramite | verificacion | no-aplica
+    estado: Mapped[str] = mapped_column(String, default="verificacion")
+
+
+class Escenario(Base):
+    """Escenario económico del catálogo (US08-03). Alimenta el panel económico."""
+    __tablename__ = "catalog_escenario"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True, default=_uuid)
+    label: Mapped[str] = mapped_column(String)
+    description: Mapped[str] = mapped_column(String, default="")
+    horizonte: Mapped[int] = mapped_column(Integer, default=10)  # años
+    # ── Económico real → BD (antes hardcode en economicScenarios.ts) ──
+    # `mult`: factor que modela la curva de la gráfica económica por escenario.
+    # `impacto`: proyección ILUSTRATIVA (no definitiva) de cómo, considerando
+    # todas las variables, el proyecto se podría sostener. Editable en admin.
+    mult: Mapped[float] = mapped_column(Float, default=1.03)
+    impacto: Mapped[str] = mapped_column(String, default="")
+
+
+class Turbine(Base):
+    """
+    Especificación de aerogenerador por categoría (S/M/L) — item 4. Antes
+    hardcodeado en `projectData.ts` (`AEROGENERADORES`). Real → BD, editable en
+    admin: potencia nominal, área y espaciamiento por turbina alimentan el cálculo
+    de nº de turbinas, rango de área por capacidad y el factor de la proyección.
+    """
+    __tablename__ = "catalog_turbine"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True)  # S | M | L
+    label: Mapped[str] = mapped_column(String)
+    detail: Mapped[str] = mapped_column(String, default="")
+    # Potencia por aerogenerador — RANGO REAL (Tabla 2 del cliente), en MW.
+    # `potencia_max_mw == 0` = sin tope superior (utility "1 MW o más").
+    potencia_min_mw: Mapped[float] = mapped_column(Float, default=0.0)
+    potencia_max_mw: Mapped[float] = mapped_column(Float, default=0.0)
+    # ⚠️ TEMPLATE: el cliente NO envió área/espaciamiento por turbina.
+    area_por_aero_km2: Mapped[float] = mapped_column(Float, default=0.0)
+    espaciamiento_m: Mapped[int] = mapped_column(Integer, default=0)
+
+
+class DataSource(Base):
+    """
+    Registro de FUENTES de datos ingeridas: qué doc, DÓNDE está guardado y el
+    estado de su última ingesta. Una fila por doc (master, variables, normas,
+    escenarios, turbinas). Así queda persistido dónde vive cada fuente (p.ej. la
+    ruta del parquet de la master) y cuándo/con qué resultado se ingirió.
+    """
+    __tablename__ = "data_source"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True)  # master|variables|normas|...
+    label: Mapped[str] = mapped_column(String, default="")
+    kind: Mapped[str] = mapped_column(String, default="csv")   # parquet|csv|json
+    location: Mapped[str] = mapped_column(String, default="")  # ruta/URL donde se guarda
+    rows: Mapped[int] = mapped_column(Integer, default=0)
+    status: Mapped[str] = mapped_column(String, default="pending")  # ok|error|pending
+    ingested_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    notes: Mapped[str] = mapped_column(String, default="")
+
+
+class ParquetColumn(Base):
+    """
+    Registro columna→clase del motor de ingesta schema-agnóstico
+    (docs/spec/ingesta-clases-conciliacion.md). Solo contiene columnas que un
+    humano YA confirmó; lo desconocido NO está aquí → la ingesta lo marca
+    `pendiente` de conciliación (nunca adivina).
+    """
+    __tablename__ = "parquet_column"
+
+    name: Mapped[str] = mapped_column(String, primary_key=True)   # "AMB_005", "global", "AMB_005_revisada"
+    base_code: Mapped[str] = mapped_column(String, default="", index=True)
+    # clase: clave|variable_modelo|variable_informativa|alerta|excluyente|
+    #        criterio|subcriterio|global|bandera|campo|ignorar|<nueva>
+    kind: Mapped[str] = mapped_column(String, default="variable_informativa")
+    # entidad/campo al que se adjunta (si kind=campo/bandera); id de catálogo si variable
+    target_ref: Mapped[str] = mapped_column(String, default="")
+    usos: Mapped[str] = mapped_column(String, default="")          # csv: mapa,heatmap,score,informe,detalle
+    tipo_dato: Mapped[str] = mapped_column(String, default="")     # double|string|int|bool
+    estado: Mapped[str] = mapped_column(String, default="ok")      # ok|pendiente|ignorada
+    nota: Mapped[str] = mapped_column(String, default="")
 
 
 class HexagonMeta(Base):
