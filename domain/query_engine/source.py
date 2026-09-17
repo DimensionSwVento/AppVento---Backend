@@ -39,15 +39,6 @@ class HexagonSource(Protocol):
         """Hexágonos dentro del bounding box (tiles)."""
         ...
 
-    def fetch_variable_cells(self, var_name: str) -> list[tuple[str, float]]:
-        """(h3_index, valor crudo) de TODOS los hex que tienen `var_name` numérica.
-
-        Capa de una variable en el mapa (cobertura RAMSAR, viento, etc.): escanea
-        el índice completo por esa variable. La normalización 0–1 la hace el
-        servicio con el rango de `hexagon_meta`.
-        """
-        ...
-
     def variable_names(self) -> list[str]:
         """Nombres de variables disponibles (desde `hexagon_meta`)."""
         ...

@@ -60,27 +60,6 @@ def get_tile(
     )
 
 
-@router.post("/variable", dependencies=_auth)
-def get_variable_layer(
-    payload: dict = Body(...),
-    source: HexagonSource = Depends(get_hexagon_source),
-):
-    """
-    Capa de UNA variable en el mapa (cobertura RAMSAR, viento, etc.): recibe el
-    `code` de la máster y devuelve TODOS sus hex res8 con valor normalizado 0–1.
-    `subtemplate=true` → si el código real aún no se conoce, usa una variable
-    disponible determinista (dato real de puente). Contrato: `[{h3_index, value}]`.
-    """
-    code        = payload.get("code")
-    subtemplate = bool(payload.get("subtemplate", False))
-    if not code:
-        raise HTTPException(status_code=400, detail="Missing code")
-    return JSONResponse(
-        content=tile_service.get_variable_layer(source, code, subtemplate),
-        headers={"Cache-Control": "public, max-age=3600"},
-    )
-
-
 @router.post("/heatmap/area", dependencies=_auth)
 def get_area_heatmap(
     payload: dict = Body(...),

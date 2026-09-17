@@ -65,15 +65,6 @@ class PostgresHexagonSource:
         )
         return [_to_row(r) for r in self.db.execute(stmt)]
 
-    def fetch_variable_cells(self, var_name: str) -> list[tuple[str, float]]:
-        # Solo hex donde la variable es numérica (jsonb_typeof = 'number'), igual
-        # que el filtro de `counts`. El índice completo por PK/JSONB → una capa.
-        rows = self.db.execute(text(
-            "SELECT h3_index, (variables ->> :v)::float8 AS val FROM hexagon "
-            "WHERE jsonb_typeof(variables -> :v) = 'number'"
-        ).bindparams(v=var_name))
-        return [(r[0], r[1]) for r in rows]
-
     # ── Metadatos ────────────────────────────────────────────────────────────
     def variable_names(self) -> list[str]:
         return list(self.db.scalars(select(HexagonMeta.variable).order_by(HexagonMeta.variable)))
