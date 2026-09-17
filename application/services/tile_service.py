@@ -170,11 +170,20 @@ def get_area_report(source: HexagonSource, polygon: Optional[list] = None,
 
 def _resolve_cells(polygon: Optional[list], hexes: Optional[list[str]],
                    resolution: int) -> list[str]:
-    """Geometría → lista de celdas a la resolución del índice (puro, sin BD)."""
+    """Geometría → lista de celdas a la resolución del índice (puro, sin BD).
+
+    Los datos crudos por hex viven SIEMPRE a res 8 (INDEX_RES). Teselar el
+    polígono a una resolución más gruesa (p.ej. res 7 del zoom lejano) genera
+    hexágonos "padre" que NO existen en el índice base → `fetch_cells` no los
+    encuentra y el dato real (siempre res 8) queda oculto. Por eso, tanto la
+    rama de `hexes` (que expande de res 7 → hijos res 8) como la de `polygon`
+    resuelven a INDEX_RES; el `resolution` entrante no reduce la granularidad
+    del dato crudo. (Sub-tesela más fina que res 8 tampoco existe en el índice.)
+    """
     if hexes:
         return list(geo.expand_to_index_res(hexes, INDEX_RES))
     if polygon:
-        return list(geo.polygon_to_cells(polygon, resolution))
+        return list(geo.polygon_to_cells(polygon, INDEX_RES))
     return []
 
 
