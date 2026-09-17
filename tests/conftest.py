@@ -35,6 +35,14 @@ class FakeHexagonSource:
             if south <= r.lat <= north and west <= r.lng <= east
         ]
 
+    def fetch_variable_cells(self, var_name: str) -> list[tuple[str, float]]:
+        out: list[tuple[str, float]] = []
+        for r in self._rows.values():
+            v = r.variables.get(var_name)
+            if isinstance(v, (int, float)):
+                out.append((r.h3_index, float(v)))
+        return out
+
     # ── metadatos ─────────────────────────────────────────────────────────
     def variable_names(self) -> list[str]:
         return sorted(self._ranges.keys())
