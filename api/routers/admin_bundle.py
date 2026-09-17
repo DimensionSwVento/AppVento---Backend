@@ -7,7 +7,12 @@ Todo exige rol admin.
 - PATCH/admin/bundle/columns/{name}  → concilia/crea una columna del registro
 """
 from __future__ import annotations
-from fastapi import APIRouter, Body, Depends, HTTPException, Query, status
+import os
+import tempfile
+
+from fastapi import (
+    APIRouter, Body, Depends, File, Form, HTTPException, Query, UploadFile, status,
+)
 from sqlalchemy.orm import Session
 
 from application.services import bundle_service
@@ -15,6 +20,36 @@ from infrastructure.auth.keycloak_guard import CurrentUser, require_admin
 from infrastructure.db.session import get_db
 
 router = APIRouter(prefix="/admin/bundle", tags=["admin-bundle"])
+
+
+def _safe_rel(rel: str, fallback: str) -> str:
+    """Ruta relativa saneada (evita salir del directorio con `..`)."""
+    rel = (rel or fallback).replace("\\", "/").lstrip("/")
+    parts = [p for p in rel.split("/") if p not in ("", "..", ".")]
+    return "/".join(parts) or fallback
+
+
+@router.post("/upload")
+async def upload_bundle(
+    files: list[UploadFile] = File(...),
+    paths: list[str] = Form(default=[]),
+    _admin: CurrentUser = Depends(require_admin),
+) -> dict:
+    """Recibe los archivos ARRASTRADOS desde el PC del admin (multipart),
+    preservando su ruta relativa (para carpetas), los guarda en una carpeta
+    temporal del servidor y devuelve `root` para usarla en /plan y /apply."""
+    dest = tempfile.mkdtemp(prefix="vento_bundle_")
+    for i, f in enumerate(files):
+        rel = paths[i] if i < len(paths) else (f.filename or f"file_{i}")
+        target = os.path.join(dest, _safe_rel(rel, f.filename or f"file_{i}"))
+        os.makedirs(os.path.dirname(target) or dest, exist_ok=True)
+        with open(target, "wb") as out:
+            while True:
+                chunk = await f.read(1024 * 1024)  # 1 MB streaming, memoria acotada
+                if not chunk:
+                    break
+                out.write(chunk)
+    return {"root": dest, "files": len(files)}
 
 
 @router.post("/plan")
