@@ -1,0 +1,20 @@
+title = "Vento Backend — gitleaks"
+
+# Reglas por defecto de gitleaks (detección de secretos reales).
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Rutas SIN secretos productivos: ejemplos, dev, tests y docs."
+# Fuentes conocidas de FALSOS POSITIVOS (claves de ejemplo, tokens de prueba,
+# secretos de dev en docker):
+#   - .env.example                      → plantilla con placeholders, no secretos reales
+#   - deploy/keycloak/vento-realm.json  → client secret y usuario de DEV, no prod
+#   - docs/                             → ejemplos y snippets ilustrativos
+#   - tests/                            → fixtures con datos FALSOS
+paths = [
+  '''\.env\.example$''',
+  '''(^|/)deploy/keycloak/vento-realm\.json$''',
+  '''(^|/)docs/''',
+  '''(^|/)tests/''',
+]

@@ -79,6 +79,53 @@ def get_counts(source: HexagonSource, zoom: int, selected: list[str],
     return source.counts(selected, var_name)
 
 
+# ── Capa de una variable en el mapa ───────────────────────────────────────────
+
+def _resolve_variable_code(source: HexagonSource, code: str,
+                           subtemplate: bool) -> Optional[str]:
+    """Código pedido → variable real disponible.
+
+    Si `code` existe en el índice, se usa tal cual. Si NO existe y `subtemplate`
+    está activo (el front aún no conoce el código real de la variable, p.ej. las
+    de viento), se elige una variable disponible de forma DETERMINISTA (hash del
+    código pedido) para mostrar datos reales "de puente" — nunca al azar, así la
+    misma variable pedida siempre cae en la misma real. Sin subtemplate → None.
+    """
+    names = source.variable_names()
+    if code in names:
+        return code
+    if subtemplate and names:
+        idx = sum(ord(c) for c in code) % len(names)
+        return names[idx]
+    return None
+
+
+def get_variable_layer(source: HexagonSource, code: str,
+                       subtemplate: bool = False) -> list[dict]:
+    """Todos los hex (h3_index + valor normalizado 0–1) de una variable de mapa.
+
+    Cobertura/heat de una variable (RAMSAR, viento…): escanea el índice por la
+    variable y normaliza con su rango de `hexagon_meta`. Contrato del front:
+    `[{h3_index, value}]`. Sin dato / variable inexistente → lista vacía.
+    """
+    var = _resolve_variable_code(source, code, subtemplate)
+    if not var:
+        return []
+    rng = source.variable_range(var)
+    span = (rng["max"] - rng["min"]) if rng else 0.0
+    out: list[dict] = []
+    for h3_index, raw in source.fetch_variable_cells(var):
+        if raw is None:
+            continue
+        if rng and span > 0:
+            v = (raw - rng["min"]) / span
+            v = 0.0 if v < 0 else 1.0 if v > 1 else v
+        else:
+            v = 0.0
+        out.append({"h3_index": h3_index, "value": round(v, 4)})
+    return out
+
+
 # ── Detalle ───────────────────────────────────────────────────────────────────
 
 def get_detail(source: HexagonSource, h3_index: str) -> Optional[HexDetail]:
@@ -268,11 +315,20 @@ def get_area_report(source: HexagonSource, polygon: Optional[list] = None,
 
 def _resolve_cells(polygon: Optional[list], hexes: Optional[list[str]],
                    resolution: int) -> list[str]:
-    """Geometría → lista de celdas a la resolución del índice (puro, sin BD)."""
+    """Geometría → lista de celdas a la resolución del índice (puro, sin BD).
+
+    Los datos crudos por hex viven SIEMPRE a res 8 (INDEX_RES). Teselar el
+    polígono a una resolución más gruesa (p.ej. res 7 del zoom lejano) genera
+    hexágonos "padre" que NO existen en el índice base → `fetch_cells` no los
+    encuentra y el dato real (siempre res 8) queda oculto. Por eso, tanto la
+    rama de `hexes` (que expande de res 7 → hijos res 8) como la de `polygon`
+    resuelven a INDEX_RES; el `resolution` entrante no reduce la granularidad
+    del dato crudo. (Sub-tesela más fina que res 8 tampoco existe en el índice.)
+    """
     if hexes:
         return list(geo.expand_to_index_res(hexes, INDEX_RES))
     if polygon:
-        return list(geo.polygon_to_cells(polygon, resolution))
+        return list(geo.polygon_to_cells(polygon, INDEX_RES))
     return []
 
 

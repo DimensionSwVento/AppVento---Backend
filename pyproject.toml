@@ -1,0 +1,37 @@
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+addopts = "--strict-markers --tb=short"
+markers = [
+    "postgres: tests de integración que requieren un PostgreSQL real (docker compose up -d db)",
+]
+filterwarnings = [
+    "ignore:Using `httpx` with `starlette.testclient` is deprecated:starlette.exceptions.StarletteDeprecationWarning",
+]
+
+[tool.ruff]
+target-version = "py310"
+line-length = 100
+
+[tool.ruff.lint]
+# Reglas por defecto (errores reales: sintaxis, nombres no definidos, imports
+# sin usar). E701 (one-liner `if x: return y`) es estilo intencional del código
+# existente y se ignora para no refactorizar lógica de aplicación.
+select = ["E4", "E7", "E9", "F"]
+ignore = ["E701"]
+
+[tool.coverage.run]
+source = ["domain", "application", "infrastructure", "api", "shared"]
+branch = true
+
+[tool.coverage.report]
+show_missing = true
+skip_covered = false
+# Política ratchet: ~5 puntos por debajo de la medición vigente. No bajar nunca
+# para "arreglar" CI — agrega tests o justifica un `exclude`.
+fail_under = 80
+exclude_lines = [
+    "pragma: no cover",
+    "if TYPE_CHECKING:",
+    "if __name__ == .__main__.:",
+]
