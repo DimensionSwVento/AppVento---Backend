@@ -16,13 +16,12 @@ from typing import Optional
 from shared.config import PARQUET_PATH, HEXAGON_INGEST, OFFSHORE_VAR
 from infrastructure.data.variable_catalog import dimension_of, get_variable_label, base_code
 from infrastructure.data import model_weights
-
-log = logging.getLogger("vento")
-
 from domain.query_engine import geo, aggregator, variable_engine
 from domain.query_engine.scoring import zoom_to_h3_res
 from domain.query_engine.source import HexagonSource
 from domain.models.hexagon import TileHex, HexDetail, AreaHex
+
+log = logging.getLogger("vento")
 
 # Resolución base del índice (los hexágonos del parquet están a res 8).
 INDEX_RES = geo.INDEX_RES
