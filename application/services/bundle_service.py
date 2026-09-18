@@ -174,6 +174,7 @@ def apply(db: Session, root: str, emplazamiento: str = "onshore",
         return {"error": f"{pend} columnas pendientes de conciliación — resuélvelas antes de aplicar"}
 
     # Import perezoso: pandas/h3 solo donde hay bundle real.
+    import gc  # noqa: PLC0415
     import pandas as pd  # noqa: PLC0415
     import h3  # noqa: PLC0415
     from functools import reduce
@@ -196,13 +197,24 @@ def apply(db: Session, root: str, emplazamiento: str = "onshore",
     def kind_of(name: str) -> str | None:
         return reg.get(name) or reg_bc.get(base_code(name))
 
-    # Merge por h3_index (outer). Materializa en memoria (ingesta de servidor).
+    # Merge por h3_index (outer). El merge se materializa una vez, pero la
+    # ITERACIÓN es perezosa (itertuples) → NO se construye una lista de dicts de
+    # todo el dataset (eso era el pico de varios GB que mataba al worker por OOM).
+    # El upsert consume este generador por lotes (`batch_size`), así la memoria se
+    # mantiene acotada al lote, no al dataset completo.
     dfs = [pd.read_parquet(p) for p in paths]
     merged = reduce(lambda a, b: a.merge(b, on="h3_index", how="outer"), dfs)
+    del dfs            # libera los parquets fuente antes de iterar/upsertear
+    gc.collect()
+
+    columns = list(merged.columns)
+    h3_pos = columns.index("h3_index")
 
     def rows():
-        for rec in merged.to_dict(orient="records"):
-            h3i = rec.get("h3_index")
+        # itertuples(index=False, name=None) → tuplas planas perezosas (bajo costo
+        # de memoria), en vez de to_dict(orient="records") que materializa todo.
+        for tup in merged.itertuples(index=False, name=None):
+            h3i = tup[h3_pos]
             if not h3i or (isinstance(h3i, float) and pd.isna(h3i)):
                 continue
             h3i = str(h3i)
@@ -213,7 +225,7 @@ def apply(db: Session, root: str, emplazamiento: str = "onshore",
             scores: dict = {}
             score_general = 0.0
             tipo = "disponible"
-            for name, val in rec.items():
+            for name, val in zip(columns, tup):
                 if name == "h3_index":
                     continue
                 if isinstance(val, float) and pd.isna(val):
