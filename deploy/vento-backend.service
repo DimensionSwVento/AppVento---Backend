@@ -29,9 +29,14 @@ ExecStartPre=/opt/AppVento---Backend/.venv/bin/alembic upgrade head
 # Bind 0.0.0.0: el backend vive en una red PRIVADA (VPC) y lo consume el BFF Next
 # desde otra instancia privada. El aislamiento lo da el security group (puerto 8000
 # solo desde la subred/IP del BFF), no el bind. NO hay ingress público.
+# --timeout 1800: la ingesta de un máster grande es CPU-bound y bloquea el worker
+# varios minutos (más aún si la RAM está justa y tira de swap); con el default/120s
+# gunicorn mataba el worker a mitad de ingesta → el BFF veía el backend caído
+# ("backend unreachable"). -w 2 deja el otro worker sirviendo mapa/scores mientras
+# uno ingiere. --graceful-timeout acompaña al timeout para no cortar en el apagado.
 ExecStart=/opt/AppVento---Backend/.venv/bin/gunicorn main:app \
     -k uvicorn.workers.UvicornWorker \
-    -w 2 -b 0.0.0.0:8000 --timeout 120
+    -w 2 -b 0.0.0.0:8000 --timeout 1800 --graceful-timeout 1800
 
 Restart=on-failure
 RestartSec=5
