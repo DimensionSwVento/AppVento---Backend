@@ -147,6 +147,153 @@ _CANON_SCORES = ("criterios.h3.parquet", "subcriterios.h3.parquet", "mcda_agrega
 _INGEST_LOCK_KEY = 811001
 
 
+def _select_paths(root: str, files: list[str] | None) -> list[str]:
+    """Archivos a ingerir: los dados explícitos, o los canónicos, o —si no hay
+    canónicos (subida modular de parquets sueltos)— todos los del bundle."""
+    if files:
+        return [os.path.join(root, f) for f in files]
+    canon = _find(root, _CANON_RAW) + _find(root, _CANON_SCORES)
+    return canon if canon else _walk_parquets(root)
+
+
+def _pendientes(db: Session) -> int:
+    return db.scalar(
+        select(func.count()).select_from(ParquetColumn).where(ParquetColumn.estado == "pendiente")
+    ) or 0
+
+
+def _kind_of_fn(db: Session):
+    """Clasificador columna→clase desde el registro conciliado (exact o base_code)."""
+    reg = {c.name: c.kind for c in db.scalars(select(ParquetColumn))}
+    reg_bc = {c.base_code: c.kind for c in db.scalars(select(ParquetColumn)) if c.base_code}
+    def kind_of(name: str) -> str | None:
+        return reg.get(name) or reg_bc.get(base_code(name))
+    return kind_of
+
+
+# Clase de columna → columna de `hexagon` que aporta (para el upsert selectivo).
+_KIND_TO_TARGET = {
+    "variable_modelo": "variables", "variable_informativa": "variables",
+    "alerta": "variables", "bandera": "variables",
+    "criterio": "scores", "subcriterio": "scores",
+    "global": "score_general", "excluyente": "tipo_celda",
+}
+
+
+def chunk_plan(db: Session, root: str, files: list[str] | None = None) -> dict:
+    """Enumera los PAQUETES (un row-group de cada parquet) para ingerir por lotes
+    consecutivos desde el front. No lee datos: solo el footer de cada parquet."""
+    if not os.path.isdir(root):
+        return {"error": f"no es una carpeta: {root}"}
+    pend = _pendientes(db)
+    if pend:
+        return {"error": f"{pend} columnas pendientes de conciliación — resuélvelas antes de aplicar"}
+    import pyarrow.parquet as pq  # noqa: PLC0415
+    paths = [p for p in _select_paths(root, files) if os.path.exists(p)]
+    if not paths:
+        return {"error": "no se encontró ningún parquet en el bundle subido"}
+    chunks: list[dict] = []
+    total_rows = 0
+    idx = 0
+    for p in paths:
+        rel = os.path.relpath(p, root)
+        pf = pq.ParquetFile(p)
+        for rg in range(pf.num_row_groups):
+            n = pf.metadata.row_group(rg).num_rows
+            chunks.append({"index": idx, "file": rel, "row_group": rg, "rows": n})
+            total_rows += n
+            idx += 1
+    return {"root": root, "chunks": chunks, "total_chunks": len(chunks), "total_rows": total_rows}
+
+
+def apply_chunk(db: Session, root: str, file: str, row_group: int,
+                emplazamiento: str = "onshore") -> dict:
+    """Ingiere UN paquete (un row-group de un parquet ya conciliado): actualiza
+    SOLO las columnas que ese parquet aporta, fusionando el JSONB (no reemplaza).
+    Memoria acotada al row-group (leído en tandas). Idempotente por `h3_index`."""
+    if not os.path.isdir(root):
+        return {"error": f"no es una carpeta: {root}"}
+    pend = _pendientes(db)
+    if pend:
+        return {"error": f"{pend} columnas pendientes de conciliación — resuélvelas antes de aplicar"}
+
+    import gc  # noqa: PLC0415
+    import pandas as pd  # noqa: PLC0415
+    import h3  # noqa: PLC0415
+    import pyarrow.parquet as pq  # noqa: PLC0415
+    from domain.query_engine.scoring import is_in_colombia
+    from infrastructure.db import hexagon_repository as hexrepo
+
+    # Ruta saneada DENTRO de root (evita salir con '..').
+    path = os.path.normpath(os.path.join(root, file))
+    if not path.startswith(os.path.normpath(root) + os.sep) or not os.path.exists(path):
+        return {"error": f"archivo no válido: {file}"}
+
+    pf = pq.ParquetFile(path)
+    if row_group < 0 or row_group >= pf.num_row_groups:
+        return {"error": f"row_group {row_group} fuera de rango (0..{pf.num_row_groups - 1})"}
+
+    columns = list(pf.schema_arrow.names)
+    if "h3_index" not in columns:
+        return {"error": f"el parquet '{file}' no tiene columna h3_index"}
+    h3_pos = columns.index("h3_index")
+
+    kind_of = _kind_of_fn(db)
+    # Qué columnas de hexagon toca este archivo (para el upsert selectivo).
+    provided: set[str] = set()
+    for name in columns:
+        if name == "h3_index":
+            continue
+        tgt = _KIND_TO_TARGET.get(kind_of(name) or "")
+        if tgt:
+            provided.add(tgt)
+
+    meta_acc: dict[str, list[float]] = {}
+
+    def rows():
+        # Row-group leído en tandas de 20k (bajo consumo aunque sea 1 solo grupo).
+        for batch in pf.iter_batches(batch_size=20000, row_groups=[row_group]):
+            bdf = batch.to_pandas()
+            for tup in bdf.itertuples(index=False, name=None):
+                h3i = tup[h3_pos]
+                if not h3i or (isinstance(h3i, float) and pd.isna(h3i)):
+                    continue
+                h3i = str(h3i)
+                lat, lng = h3.cell_to_latlng(h3i)
+                if not is_in_colombia(lat, lng):
+                    continue
+                variables: dict = {}
+                scores: dict = {}
+                score_general = 0.0
+                tipo = "disponible"
+                for name, val in zip(columns, tup):
+                    if name == "h3_index":
+                        continue
+                    if isinstance(val, float) and pd.isna(val):
+                        val = None
+                    k = kind_of(name)
+                    if k == "global":
+                        score_general = float(val) if val is not None else 0.0
+                    elif k in ("criterio", "subcriterio"):
+                        scores[name] = val
+                    elif k in ("variable_modelo", "variable_informativa", "alerta", "bandera"):
+                        variables[name] = val
+                    elif k == "excluyente":
+                        if val is True or val == 1:
+                            tipo = "excluida"
+                hexrepo._accumulate_meta(meta_acc, variables)
+                yield {
+                    "h3_index": h3i, "score_general": score_general, "tipo_celda": tipo,
+                    "lat": lat, "lng": lng, "variables": variables, "scores": scores,
+                    "emplazamiento": emplazamiento,
+                }
+
+    n = hexrepo.upsert_chunk(db, rows(), provided)
+    hexrepo.merge_meta(db, meta_acc)
+    gc.collect()
+    return {"processed": n, "file": file, "row_group": row_group, "provided": sorted(provided)}
+
+
 def _find(root: str, basenames: tuple[str, ...]) -> list[str]:
     found: list[str] = []
     for dirpath, _dirs, files in os.walk(root):

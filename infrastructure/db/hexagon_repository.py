@@ -218,6 +218,75 @@ def _upsert_batch(db: Session, batch: list[dict]) -> None:
     db.execute(stmt.on_conflict_do_update(index_elements=["h3_index"], set_=set_))
 
 
+# ── Ingesta POR PAQUETES (modular: actualiza solo las columnas conciliadas) ────
+
+def _upsert_chunk(db: Session, batch: list[dict], provided: set[str]) -> None:
+    """UPSERT de un paquete (row-group de un parquet ya conciliado).
+
+    A diferencia de `_upsert_batch` (que reemplaza toda la fila), en el CONFLICTO
+    solo actualiza las columnas que ESTE parquet aporta (`provided`) y **fusiona**
+    los JSONB (`variables`/`scores` con `||`) en vez de reemplazarlos → respeta la
+    modularidad: subir una columna actualiza solo esa clave y deja el resto quieto.
+    El INSERT (hex nuevo) trae todas las columnas con sus defaults.
+    """
+    if not batch:
+        return
+    c = Hexagon.__table__.c
+    stmt = pg_insert(Hexagon.__table__).values(batch)
+    set_: dict = {}
+    if "variables" in provided:
+        set_["variables"] = func.coalesce(c.variables, text("'{}'::jsonb")).op("||")(stmt.excluded.variables)
+    if "scores" in provided:
+        set_["scores"] = func.coalesce(c.scores, text("'{}'::jsonb")).op("||")(stmt.excluded.scores)
+    if "tipo_celda" in provided:
+        set_["tipo_celda"] = stmt.excluded.tipo_celda
+    if "score_general" in provided:
+        set_["score_general"] = stmt.excluded.score_general
+    # lat/lng/emplazamiento son consistentes por hex → se refrescan siempre.
+    set_["lat"] = stmt.excluded.lat
+    set_["lng"] = stmt.excluded.lng
+    set_["emplazamiento"] = stmt.excluded.emplazamiento
+    set_["updated_at"] = func.now()
+    db.execute(stmt.on_conflict_do_update(index_elements=["h3_index"], set_=set_))
+
+
+def upsert_chunk(db: Session, hexagons: Iterable[dict], provided: set[str],
+                 batch_size: int = 5000) -> int:
+    """Upsertea un paquete de hex fusionando solo las columnas `provided`."""
+    total = 0
+    batch: list[dict] = []
+    for h in hexagons:
+        batch.append(_to_row(h))
+        if len(batch) >= batch_size:
+            _upsert_chunk(db, batch, provided)
+            db.commit()
+            total += len(batch)
+            batch = []
+    if batch:
+        _upsert_chunk(db, batch, provided)
+        db.commit()
+        total += len(batch)
+    return total
+
+
+def merge_meta(db: Session, acc: dict[str, list[float]]) -> None:
+    """Acumula rangos en `hexagon_meta` SIN borrar (upsert min/max). Para la
+    ingesta por paquetes: cada lote refina vmin/vmax de SUS variables sin tocar
+    las demás (a diferencia de `_write_meta`, que reemplaza toda la tabla)."""
+    mc = HexagonMeta.__table__.c
+    for k, (mn, mx) in acc.items():
+        stmt = pg_insert(HexagonMeta.__table__).values(variable=k, vmin=mn, vmax=mx)
+        stmt = stmt.on_conflict_do_update(
+            index_elements=["variable"],
+            set_={
+                "vmin": func.least(mc.vmin, stmt.excluded.vmin),
+                "vmax": func.greatest(mc.vmax, stmt.excluded.vmax),
+            },
+        )
+        db.execute(stmt)
+    db.commit()
+
+
 def upsert_all(
     db: Session,
     hexagons: Iterable[dict],

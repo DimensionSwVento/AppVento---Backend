@@ -101,3 +101,37 @@ def apply_bundle(
     if "error" in result:
         raise HTTPException(status.HTTP_409_CONFLICT, detail=result["error"])
     return result
+
+
+@router.post("/chunks")
+def bundle_chunks(
+    body: dict = Body(...),
+    _admin: CurrentUser = Depends(require_admin),
+    db: Session = Depends(get_db),
+) -> dict:
+    """Plan de PAQUETES (un row-group por lote) para ingerir de forma consecutiva
+    desde el front con progreso. No lee datos, solo el footer de los parquets."""
+    result = bundle_service.chunk_plan(db, body.get("root", ""), body.get("files"))
+    if "error" in result:
+        raise HTTPException(status.HTTP_409_CONFLICT, detail=result["error"])
+    return result
+
+
+@router.post("/apply-chunk")
+def bundle_apply_chunk(
+    body: dict = Body(...),
+    _admin: CurrentUser = Depends(require_admin),
+    db: Session = Depends(get_db),
+) -> dict:
+    """Ingiere UN paquete (rápido, memoria acotada): actualiza solo las columnas
+    conciliadas del parquet, fusionando el JSONB. Idempotente por `h3_index`."""
+    result = bundle_service.apply_chunk(
+        db,
+        body.get("root", ""),
+        body.get("file", ""),
+        int(body.get("row_group", 0)),
+        body.get("emplazamiento", "onshore"),
+    )
+    if "error" in result:
+        raise HTTPException(status.HTTP_409_CONFLICT, detail=result["error"])
+    return result
