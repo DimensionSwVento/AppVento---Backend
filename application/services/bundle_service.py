@@ -14,7 +14,7 @@ from __future__ import annotations
 import os
 from datetime import datetime, timezone
 
-from sqlalchemy import func, select
+from sqlalchemy import func, select, text
 from sqlalchemy.orm import Session
 
 from infrastructure.db.models import ParquetColumn, DataSource
@@ -143,6 +143,9 @@ def upsert_column(db: Session, name: str, body: dict) -> dict:
 _CANON_RAW = ("variables.h3.parquet",)          # crudo + excluido/alerta
 _CANON_SCORES = ("criterios.h3.parquet", "subcriterios.h3.parquet", "mcda_agregado.h3.parquet")
 
+# Clave arbitraria del advisory lock de ingesta (single-flight: una a la vez).
+_INGEST_LOCK_KEY = 811001
+
 
 def _find(root: str, basenames: tuple[str, ...]) -> list[str]:
     found: list[str] = []
@@ -155,6 +158,22 @@ def _find(root: str, basenames: tuple[str, ...]) -> list[str]:
 
 def apply(db: Session, root: str, emplazamiento: str = "onshore",
           files: list[str] | None = None, mode: str = "upsert") -> dict:
+    """SEGURO de concurrencia: UNA sola ingesta a la vez (advisory lock de
+    Postgres). Dos ingestas simultáneas duplican la memoria (cada una carga
+    parquets en RAM) → OOM que tumba TODO el backend (mapa/scores incluidos). Si
+    ya hay una corriendo, se rechaza; el lock se libera al terminar o si el worker
+    muere (se cae la conexión y Postgres lo suelta solo)."""
+    got = db.scalar(text("SELECT pg_try_advisory_lock(:k)").bindparams(k=_INGEST_LOCK_KEY))
+    if not got:
+        return {"error": "Ya hay una ingesta en curso. Espera a que termine antes de subir otra máster."}
+    try:
+        return _apply_impl(db, root, emplazamiento, files, mode)
+    finally:
+        db.execute(text("SELECT pg_advisory_unlock(:k)").bindparams(k=_INGEST_LOCK_KEY))
+
+
+def _apply_impl(db: Session, root: str, emplazamiento: str = "onshore",
+                files: list[str] | None = None, mode: str = "upsert") -> dict:
     """
     FASE C: ingesta real del bundle → `hexagon`. Enruta cada columna por su clase.
     Solo corre si NO hay columnas pendientes de conciliación. Registra en
