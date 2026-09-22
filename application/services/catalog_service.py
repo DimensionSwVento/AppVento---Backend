@@ -7,6 +7,7 @@ from __future__ import annotations
 
 from datetime import date
 
+from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 from infrastructure.db import catalog_repository as repo
@@ -56,6 +57,13 @@ def _var_to_dict(v: CatalogVariable) -> dict:
         "peso": v.peso,
         "mapKind": v.map_kind,
         "mapThreshold": v.map_threshold,
+        # ── Metadatos anidados (Fase 1): InfoVariables(2) ──
+        "emplazamiento": v.emplazamiento,
+        "licencia": v.licencia,
+        "url": v.url_fuente,
+        "clase": v.clase,
+        "subcriterioId": v.subcriterio_id,
+        "iconKey": v.icon_key,
     }
 
 
@@ -84,6 +92,12 @@ _VAR_FIELDS = {
     "peso": "peso",
     "mapKind": "map_kind",
     "mapThreshold": "map_threshold",
+    "emplazamiento": "emplazamiento",
+    "licencia": "licencia",
+    "url": "url_fuente",
+    "clase": "clase",
+    "subcriterioId": "subcriterio_id",
+    "iconKey": "icon_key",
 }
 
 
@@ -111,6 +125,17 @@ def create_variable(db: Session, body: dict) -> dict:
 def update_variable(db: Session, var_id: str, body: dict) -> dict | None:
     v = repo.update_variable(db, var_id, _var_body_to_columns(body))
     return _var_to_dict(v) if v else None
+
+
+def master_codes(db: Session) -> list[str]:
+    """Códigos REALES presentes en `hexagon.variables` (para el combobox del admin:
+    vincular cada variable a su columna real de la máster). Muestra sobre 2000 hex
+    —las claves son el mismo set por hex— → rápido, sin escanear millones."""
+    rows = db.execute(text(
+        "SELECT DISTINCT k FROM (SELECT variables FROM hexagon LIMIT 2000) s, "
+        "jsonb_object_keys(s.variables) k ORDER BY k"
+    ))
+    return [r[0] for r in rows]
 
 
 def update_dataset(db: Session, var_id: str, version: str) -> dict | None:

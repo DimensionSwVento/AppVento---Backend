@@ -220,6 +220,10 @@ def get_area_report(source: HexagonSource, polygon: Optional[list] = None,
         return []
 
     rows       = source.fetch_cells(cells)
+    # Ponderadas por hex (tabla aparte) para el "descargar crudos". Opcional: si la
+    # fuente no la expone (p.ej. stub en memoria), queda vacío sin romper.
+    pon_fn     = getattr(source, "fetch_variables_pon", None)
+    pon        = pon_fn(cells) if callable(pon_fn) else {}
     available  = source.variable_names()
     ranges     = source.variable_ranges()
     categories = extract_categories(available)
@@ -261,6 +265,7 @@ def get_area_report(source: HexagonSource, polygon: Optional[list] = None,
             h3_index=hx.h3_index, lat=hx.lat, lng=hx.lng,
             score_general=score_general, scores=scores,
             tipo_celda=hx.tipo_celda, variables=hx.variables,
+            variables_pon=pon.get(hx.h3_index, {}),
         ))
     return out
 
