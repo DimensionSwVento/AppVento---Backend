@@ -135,3 +135,18 @@ def bundle_apply_chunk(
     if "error" in result:
         raise HTTPException(status.HTTP_409_CONFLICT, detail=result["error"])
     return result
+
+
+@router.post("/finalize")
+def bundle_finalize(
+    body: dict = Body(...),
+    _admin: CurrentUser = Depends(require_admin),
+    db: Session = Depends(get_db),
+) -> dict:
+    """Cierra la ingesta por paquetes: registra la NUEVA versión de la máster
+    (version++ + fecha + archivo) y actualiza data_source. El front lo llama una
+    vez tras subir todos los lotes."""
+    return bundle_service.finalize(
+        db, body.get("root", ""), body.get("files"),
+        body.get("emplazamiento", "onshore"),
+    )

@@ -17,7 +17,7 @@ from datetime import datetime, timezone
 from sqlalchemy import func, select, text
 from sqlalchemy.orm import Session
 
-from infrastructure.db.models import ParquetColumn, DataSource
+from infrastructure.db.models import ParquetColumn, DataSource, Hexagon, HexagonMeta
 from infrastructure.data.variable_catalog import base_code
 
 # kind (clase) → DÓNDE aterriza en hexagon (para el preview del plan).
@@ -142,6 +142,7 @@ def upsert_column(db: Session, name: str, body: dict) -> dict:
 # redundantes). Se buscan por basename en el árbol del bundle.
 _CANON_RAW = ("variables.h3.parquet",)          # crudo + excluido/alerta
 _CANON_SCORES = ("criterios.h3.parquet", "subcriterios.h3.parquet", "mcda_agregado.h3.parquet")
+_CANON_PON = ("variables_pon.h3.parquet",)      # ponderadas → hexagon_variables_pon (tabla propia)
 
 # Clave arbitraria del advisory lock de ingesta (single-flight: una a la vez).
 _INGEST_LOCK_KEY = 811001
@@ -294,6 +295,48 @@ def apply_chunk(db: Session, root: str, file: str, row_group: int,
     return {"processed": n, "file": file, "row_group": row_group, "provided": sorted(provided)}
 
 
+def finalize(db: Session, root: str, files: list[str] | None = None,
+             emplazamiento: str = "onshore") -> dict:
+    """Cierra una ingesta POR PAQUETES: registra la nueva versión de la máster
+    (version++ + fecha + archivo de origen) y actualiza `data_source`. Lo llama el
+    front UNA vez, tras subir todos los lotes. Así los informes estampan la versión
+    y fuente correctas (el flujo por chunks no lo hacía por lote)."""
+    from application.services import master_service  # noqa: PLC0415 (evita ciclo)
+
+    paths = [p for p in _select_paths(root, files) if os.path.exists(p)]
+    filenames = (
+        ", ".join(os.path.relpath(p, root) for p in paths) if paths else root
+    )
+    hex_count = db.scalar(select(func.count()).select_from(Hexagon)) or 0
+    var_count = db.scalar(select(func.count()).select_from(HexagonMeta)) or 0
+
+    # Fuente de datos: fecha de ingesta + archivos de origen.
+    ds = db.get(DataSource, "bundle")
+    if ds is None:
+        ds = DataSource(id="bundle")
+        db.add(ds)
+    ds.label = f"Máster ({emplazamiento})"
+    ds.kind = "parquet"
+    ds.location = root
+    ds.rows = hex_count
+    ds.status = "ok"
+    ds.ingested_at = datetime.now(timezone.utc)
+    ds.notes = f"archivos: {filenames}"
+    db.commit()
+
+    # Nueva versión de la máster (version++ + fecha + archivo).
+    mv = master_service.record_ingest(
+        db, source=filenames, hex_count=hex_count, var_count=var_count
+    )
+    return {
+        "version": mv["version"],
+        "appliedAt": mv["appliedAt"],
+        "source": filenames,
+        "hex_count": hex_count,
+        "var_count": var_count,
+    }
+
+
 def _find(root: str, basenames: tuple[str, ...]) -> list[str]:
     found: list[str] = []
     for dirpath, _dirs, files in os.walk(root):
@@ -301,6 +344,51 @@ def _find(root: str, basenames: tuple[str, ...]) -> list[str]:
             if f in basenames:
                 found.append(os.path.join(dirpath, f))
     return found
+
+
+def _ingest_pon(db: Session, root: str, emplazamiento: str) -> int:
+    """Ingiere `variables_pon.h3.parquet` → `hexagon_variables_pon` (tabla propia,
+    particionada por emplazamiento). Las columnas son los MISMOS códigos que las
+    crudas pero con el VALOR PONDERADO; por eso van a su tabla, no a hexagon.variables.
+    Devuelve nº de hex ponderados ingeridos (0 si no está el archivo)."""
+    paths = [p for p in _find(root, _CANON_PON) if os.path.exists(p)]
+    if not paths:
+        return 0
+    import pandas as pd  # noqa: PLC0415
+    import h3  # noqa: PLC0415
+    from domain.query_engine.scoring import is_in_colombia
+    from infrastructure.db import hexagon_pon_repository as ponrepo
+
+    df = pd.read_parquet(paths[0])
+    if "h3_index" not in df.columns:
+        return 0
+    cols = [c for c in df.columns if c != "h3_index"]
+    columns = list(df.columns)
+    h3_pos = columns.index("h3_index")
+
+    def rows():
+        for tup in df.itertuples(index=False, name=None):
+            h3i = tup[h3_pos]
+            if not h3i or (isinstance(h3i, float) and pd.isna(h3i)):
+                continue
+            h3i = str(h3i)
+            lat, lng = h3.cell_to_latlng(h3i)
+            if not is_in_colombia(lat, lng):
+                continue
+            vp: dict = {}
+            for name, val in zip(columns, tup):
+                if name == "h3_index":
+                    continue
+                if isinstance(val, float) and pd.isna(val):
+                    val = None
+                vp[name] = val
+            yield {"h3_index": h3i, "variables_pon": vp}
+
+    # Separación por tablas: hoy solo onshore → `hexagon_variables_pon`. El offshore
+    # irá a `hexagon_variables_pon_offshore` (tabla nueva) cuando llegue ese bundle.
+    if emplazamiento != "onshore":
+        return 0
+    return ponrepo.upsert_pon(db, rows())
 
 
 def apply(db: Session, root: str, emplazamiento: str = "onshore",
@@ -418,6 +506,10 @@ def _apply_impl(db: Session, root: str, emplazamiento: str = "onshore",
     else:
         n = hexrepo.upsert_all(db, rows())           # interfaz: upsert, no frena informes
 
+    # Ponderadas → su tabla propia (`hexagon_variables_pon`), si el bundle la trae.
+    # Independiente del hexagon crudo; alimenta el "descargar crudos" del informe.
+    n_pon = _ingest_pon(db, root, emplazamiento)
+
     # Registrar la fuente (dónde vive el bundle + resultado).
     ds = db.get(DataSource, "bundle")
     if ds is None:
@@ -432,5 +524,5 @@ def _apply_impl(db: Session, root: str, emplazamiento: str = "onshore",
     ds.notes = f"archivos: {', '.join(os.path.relpath(p, root) for p in paths)}"
     db.commit()
 
-    return {"rows": n, "emplazamiento": emplazamiento,
+    return {"rows": n, "rows_pon": n_pon, "emplazamiento": emplazamiento,
             "files": [os.path.relpath(p, root) for p in paths]}

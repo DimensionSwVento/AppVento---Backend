@@ -68,6 +68,23 @@ def current_version_label(db: Session) -> str | None:
     return cur.version if cur else None
 
 
+def record_ingest(db: Session, source: str | None, hex_count: int = 0,
+                  var_count: int = 0) -> dict:
+    """Registra una NUEVA versión de la master tras una ingesta COMPLETADA (subida
+    por paquetes): version++ (etiqueta por timestamp UTC), fecha de aplicación y
+    archivo(s) de origen. La consumen los informes (`current_version_label`)."""
+    now = _now()
+    mv = repo.create(db, {
+        "version": _label(now),
+        "status": "ready",
+        "source": source,
+        "applied_at": now,
+        "hex_count": hex_count,
+        "var_count": var_count,
+    })
+    return _to_dict(mv)
+
+
 def request_update(db: Session, mode: str, scheduled_at: str | None,
                    source: str | None) -> dict:
     """

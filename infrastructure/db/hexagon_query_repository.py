@@ -57,6 +57,17 @@ class PostgresHexagonSource:
         r = self.db.execute(stmt).first()
         return _to_row(r) if r else None
 
+    def fetch_variables_pon(self, cells: list[str]) -> dict[str, dict]:
+        """Valores PONDERADOS por hex (tabla `hexagon_variables_pon`) para las
+        celdas dadas → {h3_index: {code: valor}}. Vacío si no hay ponderadas."""
+        if not cells:
+            return {}
+        from infrastructure.db.models import HexagonVariablesPon  # noqa: PLC0415
+        stmt = select(
+            HexagonVariablesPon.h3_index, HexagonVariablesPon.variables_pon
+        ).where(HexagonVariablesPon.h3_index.in_(cells))
+        return {h3: (vp or {}) for h3, vp in self.db.execute(stmt)}
+
     # ── Por bbox (tiles) ─────────────────────────────────────────────────────
     def fetch_bbox(self, west: float, south: float, east: float, north: float) -> list[HexRow]:
         stmt = select(*_COLS).where(

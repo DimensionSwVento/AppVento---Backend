@@ -56,3 +56,6 @@ class AreaHex:
     scores: dict[str, float]  # por categoría/dimensión: TEC, AMB, SOE, MAC, REG…
     tipo_celda: str
     variables: dict[str, Value] = field(default_factory=dict)
+    # Valores PONDERADOS por variable (tabla `hexagon_variables_pon`) — para el
+    # "descargar crudos" del informe. Vacío si el bundle no trae variables_pon.
+    variables_pon: dict[str, Value] = field(default_factory=dict)

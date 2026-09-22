@@ -160,6 +160,15 @@ class CatalogVariable(Base):
     peso: Mapped[float] = mapped_column(Float, default=1.0)           # |peso| en el WLC
     map_kind: Mapped[str] = mapped_column(String, default="")         # ""|heatmap|zona
     map_threshold: Mapped[float] = mapped_column(Float, default=0.0)  # umbral heatmap
+    # ── Metadatos de InfoVariables(2) (Fase 1 del rediseño anidado) ──
+    #    Alimentados por el actualizador de metadatos conciliando por `master_id`.
+    subcriterio_id: Mapped[str] = mapped_column(String, default="")   # FK a catalog_subcriterio
+    emplazamiento: Mapped[str] = mapped_column(String, default="both")  # onshore|offshore|both
+    licencia: Mapped[str] = mapped_column(String, default="")
+    url_fuente: Mapped[str] = mapped_column(String, default="")
+    icon_key: Mapped[str] = mapped_column(String, default="")
+    # clase (más fina que `tipo`): modelo|informativa|alerta|excluyente|campo
+    clase: Mapped[str] = mapped_column(String, default="informativa")
 
 
 class Norma(Base):
@@ -264,3 +273,107 @@ class HexagonMeta(Base):
     variable: Mapped[str] = mapped_column(String, primary_key=True)
     vmin: Mapped[float] = mapped_column(Float)
     vmax: Mapped[float] = mapped_column(Float)
+
+
+class HexagonVariablesPon(Base):
+    """
+    Variables PONDERADAS por hex (`variables_pon.h3.parquet`), en tabla PROPIA
+    (Fase 2). Se guardan aparte de las crudas (`hexagon.variables`) porque el
+    "descargar crudos" del informe las necesita — decisión winx: no se desperdician
+    datos. Un JSONB {code: valor_ponderado}.
+
+    Separación onshore/offshore por TABLAS SEPARADAS: esta es ONSHORE; el offshore
+    será `hexagon_variables_pon_offshore` (tabla nueva) cuando llegue ese bundle.
+    """
+    __tablename__ = "hexagon_variables_pon"
+
+    h3_index: Mapped[str] = mapped_column(String, primary_key=True)
+    variables_pon: Mapped[dict] = mapped_column(JSONB, default=dict)
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  Catálogo JERÁRQUICO (Fase 1 del rediseño anidado) — dimensión → criterio →
+#  subcriterio → variable. Fiel al modelo del bundle (docs/spec/modelo-datos-
+#  anidado.md). Editable por admin; alimentado por el actualizador de metadatos.
+# ══════════════════════════════════════════════════════════════════════════════
+
+class Dimension(Base):
+    """Dimensión del modelo (Técnica, Ambiental, Social, Económica, Regulatoria)."""
+    __tablename__ = "catalog_dimension"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True)  # slug: tecnica|ambiental|...
+    nombre: Mapped[str] = mapped_column(String, default="")
+    definicion: Mapped[str] = mapped_column(String, default="")
+    orden: Mapped[int] = mapped_column(Integer, default=0)
+    puntua: Mapped[bool] = mapped_column(Boolean, default=True)  # False = informativa (Econ/Regul)
+
+
+class Criterio(Base):
+    """Criterio del modelo (recurso_eolico, infraestructura, contexto_biotico…)."""
+    __tablename__ = "catalog_criterio"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    dimension_id: Mapped[str] = mapped_column(String, default="", index=True)
+    code: Mapped[str] = mapped_column(String, default="")  # columna del bundle (recurso_eolico…)
+    nombre: Mapped[str] = mapped_column(String, default="")
+    definicion: Mapped[str] = mapped_column(String, default="")
+    peso: Mapped[float] = mapped_column(Float, default=0.0)
+
+
+class Subcriterio(Base):
+    """Subcriterio del modelo (densidad_wpd, dist_nodos, vulnerabilidad…)."""
+    __tablename__ = "catalog_subcriterio"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    criterio_id: Mapped[str] = mapped_column(String, default="", index=True)
+    code: Mapped[str] = mapped_column(String, default="")  # columna del bundle (densidad_wpd…)
+    nombre: Mapped[str] = mapped_column(String, default="")
+    definicion: Mapped[str] = mapped_column(String, default="")
+
+
+class EconomicPanel(Base):
+    """Catálogo de hojas del bundle económico (de la hoja RESUMEN). `curado` = se
+    muestra en el panel económico de la app (Fase 3)."""
+    __tablename__ = "economic_panel"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True)  # nombre de hoja
+    nombre: Mapped[str] = mapped_column(String, default="")
+    descripcion: Mapped[str] = mapped_column(String, default="")
+    curado: Mapped[bool] = mapped_column(Boolean, default=False)
+
+
+class EconomicSeries(Base):
+    """
+    Serie económica LONG (Fase 3): una fila por punto de las 26 hojas del bundle
+    macro. `panel` = hoja de origen; `cat1..cat3` = categorías del parámetro;
+    `escenario_mw` = escenario de MW de generación; `anio` + `valor`. Informativa,
+    no toca `hexagon`. Ver docs/spec/modelo-datos-anidado.md §6.3.
+    """
+    __tablename__ = "economic_series"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    panel: Mapped[str] = mapped_column(String, index=True)
+    escenario_mw: Mapped[int] = mapped_column(Integer, default=0)
+    cat1: Mapped[str] = mapped_column(String, default="")
+    cat2: Mapped[str] = mapped_column(String, default="")
+    cat3: Mapped[str] = mapped_column(String, default="")
+    anio: Mapped[int] = mapped_column(Integer, default=0)
+    valor: Mapped[float] = mapped_column(Float, default=0.0)
+
+
+class ColumnMapping(Base):
+    """
+    Perfil de importación: mapea el ENCABEZADO de un CSV/XLSX de metadatos al
+    CAMPO destino del catálogo. Lo usa `metadata_ingest` para clasificar columnas
+    (conocida → destino; desconocida → pendiente de conciliación). Un perfil por
+    tipo de doc (`infovariables`, `economico`, …).
+    """
+    __tablename__ = "column_mapping"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True)   # "<perfil>:<encabezado>"
+    perfil: Mapped[str] = mapped_column(String, default="", index=True)
+    encabezado: Mapped[str] = mapped_column(String, default="")
+    destino: Mapped[str] = mapped_column(String, default="")    # campo del catálogo
+    transform: Mapped[str] = mapped_column(String, default="")  # emplazamiento|bool_si_no|texto
+    estado: Mapped[str] = mapped_column(String, default="ok")   # ok|pendiente|ignorada
+    nota: Mapped[str] = mapped_column(String, default="")
