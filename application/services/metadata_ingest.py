@@ -21,9 +21,11 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from infrastructure.db.models import (
-    CatalogVariable, ColumnMapping, Dimension, Criterio, Subcriterio,
+    CatalogVariable, ColumnMapping, Dimension, Criterio, Subcriterio, Norma,
 )
-from infrastructure.data.metadata_reader import read_table, forward_fill
+from infrastructure.data.metadata_reader import (
+    read_table, read_headers, list_sheets, forward_fill,
+)
 
 
 # ── Normalización de texto (acentos/espacios) ────────────────────────────────
@@ -40,6 +42,28 @@ def _slug(s: str) -> str:
     return "-".join(p for p in out.split("-") if p)
 
 
+def _detect_kind(path: str) -> str:
+    """Autodetecta el tipo de doc por sus encabezados (barato, solo cabeceras):
+    'economic' si alguna hoja/columna trae `escenario_mw` + `valor` (panel macro);
+    si no, 'infovariables' (catálogo). Un solo drag → se rutea solo."""
+    def _is_eco(headers: list[str]) -> bool:
+        hs = {h.strip().lower() for h in headers}
+        return "escenario_mw" in hs and "valor" in hs
+
+    ext = os.path.splitext(path)[1].lower()
+    try:
+        if ext in (".xlsx", ".xlsm"):
+            for sh in list_sheets(path):
+                if _is_eco(read_headers(path, sheet=sh)):
+                    return "economic"
+            return "infovariables"
+        if _is_eco(read_headers(path)):
+            return "economic"
+        return "infovariables"
+    except Exception:  # noqa: BLE001 — ante la duda, catálogo
+        return "infovariables"
+
+
 # ── Perfil InfoVariables: (keywords, destino, transform). ORDEN IMPORTA
 #    (subcriterio antes que criterio; url antes que fuente; mapa antes que menú). ─
 _INFOVARIABLES_PROFILE: list[tuple[tuple[str, ...], str, str]] = [
@@ -54,6 +78,10 @@ _INFOVARIABLES_PROFILE: list[tuple[tuple[str, ...], str, str]] = [
     (("url",), "url_fuente", "texto"),
     (("tipo de licencia", "licencia"), "licencia", "texto"),
     (("fuente",), "fuente", "texto"),
+    (("estado",), "estado", "texto"),               # regulatoria: estado de la norma
+    (("condicion", "activacion"), "condicion", "texto"),  # regulatoria: condición de activación
+    (("comentarios", "ideas"), "comentarios", "texto"),   # informativas: nota de visualización
+    (("norma", "disposicion"), "label", "texto"),   # regulatoria: nombre de la norma
     (("variable",), "label", "texto"),
 ]
 
@@ -108,13 +136,39 @@ def _menu_tipo(v: str) -> tuple[str, bool]:
     return "informativa", True
 
 
+def _estado_norma(v: str) -> str:
+    """Estado del semáforo regulatorio (catalog_norma): aplica|tramite|verificacion|no-aplica."""
+    n = _norm(v)
+    if "no aplica" in n:
+        return "no-aplica"
+    if "tramite" in n:
+        return "tramite"
+    if "verificac" in n:
+        return "verificacion"
+    if "vigente" in n or "aplica" in n:
+        return "aplica"
+    return "verificacion"
+
+
+def _is_norma_row(master_id: str, dim_id: str) -> bool:
+    """Fila regulatoria: código REG… o dimensión regulatoria → va a catalog_norma."""
+    return master_id.upper().startswith("REG") or "regulac" in dim_id or "regulator" in dim_id
+
+
 # ── FASE A — PLAN ─────────────────────────────────────────────────────────────
 
 def plan(db: Session, path: str, perfil: str = "infovariables",
          sheet: str | None = None) -> dict:
-    """Qué columnas del doc se mapean y cuáles se omiten (sin mapear)."""
+    """Qué columnas del doc se mapean y cuáles se omiten (sin mapear).
+    Autodetecta: si es panel económico, rutea a economic_ingest.plan."""
     if not os.path.exists(path):
         return {"error": f"no existe el archivo: {path}"}
+    if _detect_kind(path) == "economic":
+        from application.services import economic_ingest  # noqa: PLC0415
+        p = economic_ingest.plan(path)
+        if "error" not in p:
+            p["tipo"] = "economic"
+        return p
     try:
         table = read_table(path, sheet=sheet)
     except Exception as exc:  # noqa: BLE001
@@ -128,6 +182,7 @@ def plan(db: Session, path: str, perfil: str = "infovariables",
         else:
             unmapped.append({"header": h})
     return {
+        "tipo": "infovariables",
         "perfil": perfil, "sheet": table.sheet, "rows": len(table.rows),
         "mapped": mapped, "unmapped": unmapped,
         "summary": {"total": len(table.headers), "mapeadas": len(mapped),
@@ -169,9 +224,16 @@ def upsert_mapping(db: Session, perfil: str, encabezado: str, body: dict) -> dic
 def apply(db: Session, path: str, perfil: str = "infovariables",
           sheet: str | None = None) -> dict:
     """Upsert `dimension → criterio → subcriterio → variable` desde el doc.
-    Concilia la variable por `master_id`; la jerarquía por nombre/`code`."""
+    Concilia la variable por `master_id`; la jerarquía por nombre/`code`.
+    Autodetecta: si es panel económico, rutea a economic_ingest.apply."""
     if not os.path.exists(path):
         return {"error": f"no existe el archivo: {path}"}
+    if _detect_kind(path) == "economic":
+        from application.services import economic_ingest  # noqa: PLC0415
+        r = economic_ingest.apply(db, path, only_curated=True)
+        if "error" not in r:
+            r["tipo"] = "economic"
+        return r
     try:
         table = read_table(path, sheet=sheet)
     except Exception as exc:  # noqa: BLE001
@@ -208,7 +270,7 @@ def apply(db: Session, path: str, perfil: str = "infovariables",
     def raw(row: dict, header: str | None) -> str:
         return str(row.get(header) or "").strip() if header else ""
 
-    n_dim = n_cri = n_sub = n_var = 0
+    n_dim = n_cri = n_sub = n_var = n_norma = 0
     seen_dim: set[str] = set()
     seen_cri: set[str] = set()
     seen_sub: set[str] = set()
@@ -226,6 +288,34 @@ def apply(db: Session, path: str, perfil: str = "infovariables",
 
         # Fila separadora / vacía: sin variable NI master_id → se ignora.
         if not label and not master_id:
+            continue
+
+        # REGULATORIA → catalog_norma (no catalog_variable). Se rutea por código
+        # REG… o dimensión regulatoria, ANTES de crear jerarquía/variable.
+        if master_id and _is_norma_row(master_id, _slug(dim_name) if dim_name else ""):
+            desc = val(row, "descripcion")
+            nom = label or (desc[:80] if desc else master_id)
+            nrm = db.get(Norma, master_id)
+            if nrm is None:
+                nrm = Norma(id=master_id, nombre=nom)
+                db.add(nrm)
+                n_norma += 1
+            elif nom:
+                nrm.nombre = nom
+            if desc:
+                nrm.descripcion = desc
+            est = val(row, "estado")
+            if est:
+                nrm.estado = _estado_norma(est)
+            # Metadatos regulatorios (antes se perdían).
+            for dest, attr in (("fuente", "fuente"), ("url_fuente", "url_fuente"),
+                               ("condicion", "condicion")):
+                v = val(row, dest)
+                if v:
+                    setattr(nrm, attr, v)
+            # Regulación-Social/Técnica/Ambiental: la norma va ligada a una VARIABLE
+            # (código SOC/AMB/…, no REG) → se guarda la referencia.
+            nrm.variable_ref = "" if master_id.upper().startswith("REG") else master_id
             continue
 
         # Jerarquía (upsert por slug estable).
@@ -298,7 +388,8 @@ def apply(db: Session, path: str, perfil: str = "infovariables",
         if sub_id:
             var.subcriterio_id = sub_id
         for dest, attr in (("descripcion", "descripcion"), ("fuente", "fuente"),
-                           ("licencia", "licencia"), ("url_fuente", "url_fuente")):
+                           ("licencia", "licencia"), ("url_fuente", "url_fuente"),
+                           ("comentarios", "comentarios")):
             v = val(row, dest)
             if v:
                 setattr(var, attr, v)
@@ -313,8 +404,9 @@ def apply(db: Session, path: str, perfil: str = "infovariables",
             var.no_calculo = no_calc
 
     db.commit()
-    return {"dimensiones": n_dim, "criterios": n_cri, "subcriterios": n_sub,
-            "variables": n_var, "perfil": perfil, "sheet": table.sheet}
+    return {"tipo": "infovariables", "dimensiones": n_dim, "criterios": n_cri,
+            "subcriterios": n_sub, "variables": n_var, "normas": n_norma,
+            "perfil": perfil, "sheet": table.sheet}
 
 
 # ── Lectura de la jerarquía (para la app / página de Dimensiones) ─────────────
