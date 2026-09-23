@@ -18,7 +18,6 @@ Ejemplos:
 """
 from __future__ import annotations
 import argparse
-import json
 import sys
 
 from infrastructure.db.session import SessionLocal
@@ -39,10 +38,17 @@ def main() -> int:
             print(plan["error"], file=sys.stderr)
             return 2
         s = plan["summary"]
+        # Tabla legible columna → CLASE detectada → destino (como en la HU de
+        # conciliación). Se imprime SIEMPRE (antes de ingerir) para trazabilidad.
+        print(f"\n{'COLUMNA':<22} {'CLASE':<22} {'ESTADO':<10} DESTINO")
+        print("─" * 90)
+        for c in plan["columns"]:
+            print(f"{c['name']:<22} {str(c.get('kind') or '—'):<22} "
+                  f"{c['estado']:<10} {c.get('destino') or '—'}")
+        print("─" * 90)
         print(f"PLAN: {s['total']} columnas · {s['conocidas']} ok · "
-              f"{s['propuestas']} propuestas · {s['pendientes']} pendientes")
+              f"{s['propuestas']} propuestas · {s['pendientes']} pendientes\n")
         if args.plan:
-            print(json.dumps(plan, ensure_ascii=False, indent=1))
             return 0
         if s["pendientes"]:
             print(f"⛔ Hay {s['pendientes']} columnas pendientes de conciliación. "
