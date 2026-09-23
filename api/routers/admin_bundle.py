@@ -103,6 +103,24 @@ def apply_bundle(
     return result
 
 
+@router.post("/apply-detached")
+def apply_detached(
+    body: dict = Body(...),
+    _admin: CurrentUser = Depends(require_admin),
+    db: Session = Depends(get_db),
+) -> dict:
+    """Ingesta DESTRUCTIVA en subproceso AISLADO (memoria propia): para másters
+    pesadas que, en el worker, tumbarían la API por OOM. Devuelve el pid al
+    instante; el estado se consulta en /admin/catalog/sources (data_source
+    'bundle': updating → ok). Blue-green: la app no se frena durante la carga."""
+    result = bundle_service.apply_detached(
+        db, body.get("root", ""), body.get("emplazamiento", "onshore"),
+    )
+    if "error" in result:
+        raise HTTPException(status.HTTP_409_CONFLICT, detail=result["error"])
+    return result
+
+
 @router.post("/chunks")
 def bundle_chunks(
     body: dict = Body(...),
