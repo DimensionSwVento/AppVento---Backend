@@ -51,11 +51,17 @@ def _panel_name(name: str | None) -> str | None:
 
 def _detect_kind(path: str) -> str:
     """Autodetecta el tipo de doc por sus encabezados (barato, solo cabeceras):
-    'economic' si alguna hoja/columna trae `escenario_mw` + `valor` (panel macro);
-    si no, 'infovariables' (catálogo). Un solo drag → se rutea solo."""
+    'economic' si alguna hoja trae el panel de salida (`escenario_mw` + `valor`, tidy)
+    O los inputs de escenario (columnas `escenario_mw_<N>`, ancho — el nombre de
+    archivo puede cambiar, por eso se detecta por COLUMNAS); si no, 'infovariables'
+    (catálogo). Un solo drag → se rutea solo."""
     def _is_eco(headers: list[str]) -> bool:
         hs = {h.strip().lower() for h in headers}
-        return "escenario_mw" in hs and "valor" in hs
+        # panel de salida (tidy): escenario_mw + valor.
+        if "escenario_mw" in hs and "valor" in hs:
+            return True
+        # inputs de escenario (ancho): Variable × YEAR × Escenario_mw_<N>.
+        return any(h.startswith("escenario_mw_") for h in hs)
 
     ext = os.path.splitext(path)[1].lower()
     try:
@@ -298,6 +304,13 @@ def apply(db: Session, path: str, perfil: str = "infovariables",
 
         # Fila separadora / vacía: sin variable NI master_id → se ignora.
         if not label and not master_id:
+            continue
+
+        # Sub-encabezado repetido a mitad del archivo (InfoVariables c repite la
+        # cabecera antes del bloque regulatorio): su "master_id" es en realidad el
+        # texto del encabezado ("ID (Mostrar en el detalle)"). Los códigos reales
+        # (REG-001-L, AMB-005-A, TEC…) no llevan espacios ni paréntesis → se descarta.
+        if master_id and (" " in master_id or "(" in master_id):
             continue
 
         # REGULATORIA → catalog_norma (no catalog_variable). Se rutea por código

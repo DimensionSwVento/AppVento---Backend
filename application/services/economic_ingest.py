@@ -1,7 +1,13 @@
 """
-Ingesta del bundle ECONÓMICO macro (Fase 3). Lee `panel_por_variable.xlsx`
-(26 hojas, formato tidy `escenario_mw | cat1..catN | anio | valor`) → tabla LONG
-`economic_series`, y la hoja RESUMEN → catálogo `economic_panel`.
+Ingesta del bundle ECONÓMICO macro (Fase 3). Cubre los TRES archivos de la
+dimensión económica → tabla LONG única `economic_series`:
+
+1. `panel_por_variable.xlsx` — OUTPUTS del modelo (26 hojas, formato **tidy**
+   `escenario_mw | cat1..catN | anio | valor`); la hoja RESUMEN → `economic_panel`.
+2. `variables_esce.xlsx` / `VARIABLES_2.xlsx` — INPUTS de escenario (drivers
+   exógenos), formato **ancho** `Variable | YEAR | Escenario_mw_<N>…`. Se
+   detectan por COLUMNAS (el nombre de archivo puede cambiar) y se derriten
+   (melt) a la misma tabla long: `cat1 = Variable`, `escenario_mw = <N>`.
 
 Informativa: no toca `hexagon` ni el modelo de idoneidad. La app muestra un
 subconjunto CURADO (RESUMEN1/PIB/PRECIOS/GENERACION/EMISIONES/EMPLEO); el resto se
@@ -14,11 +20,29 @@ from sqlalchemy import delete, func, select
 from sqlalchemy.orm import Session
 
 from infrastructure.db.models import EconomicPanel, EconomicSeries
-from infrastructure.data.metadata_reader import list_sheets, read_table
+from infrastructure.data.metadata_reader import list_sheets, read_headers, read_table
 
 # Hojas que la app muestra en el panel económico (US04-02). El resto = solo BD.
 CURATED = {"RESUMEN1", "PIB", "PRECIOS", "GENERACION", "EMISIONES", "EMPLEO"}
 _META_SHEET = "RESUMEN"
+
+
+def _sheet_format(headers: list[str]) -> str:
+    """Formato de una hoja/archivo por sus columnas:
+    - 'wide'  = inputs de escenario (columnas `Escenario_mw_<N>` → melt).
+    - 'tidy'  = panel de salida (`escenario_mw` + `valor`).
+    - 'meta'  = RESUMEN u otra (catálogo de paneles / no ingerible)."""
+    hs = {h.strip().lower() for h in headers}
+    if any(h.startswith("escenario_mw_") for h in hs):
+        return "wide"
+    if "valor" in hs and "escenario_mw" in hs:
+        return "tidy"
+    return "meta"
+
+
+def _esc_from_header(h: str) -> int:
+    """`Escenario_mw_1000` → 1000 (el MW de generación va en el nombre de columna)."""
+    return _to_int(h.strip().lower().replace("escenario_mw_", ""))
 
 
 def _to_int(v) -> int:
@@ -41,34 +65,38 @@ def _norm_sheet(name: str) -> str:
 
 # ── PLAN ──────────────────────────────────────────────────────────────────────
 
-def _rol(name: str) -> str:
-    up = _norm_sheet(name)
-    return "meta" if up == _META_SHEET else ("curada" if up in CURATED else "solo-bd")
+def _rol_sheet(sheet: str, fmt: str) -> str:
+    """Rol para el plan (chip de la UI): input (ancho) / curada / meta / solo-bd."""
+    if fmt == "wide":
+        return "input"
+    up = _norm_sheet(sheet)
+    if up == _META_SHEET:
+        return "meta"
+    return "curada" if up in CURATED else "solo-bd"
 
 
 def plan(path: str, default_panel: str | None = None) -> dict:
-    """Lista las hojas (xlsx) o la única 'hoja' (csv) y su rol. `default_panel` =
-    nombre a usar como panel cuando es un CSV suelto (p.ej. el nombre del archivo)."""
+    """Lista las hojas (xlsx) o la única 'hoja' (csv) y su rol/formato. `default_panel`
+    = nombre a usar como panel cuando es un archivo suelto (p.ej. el del archivo)."""
     if not os.path.exists(path):
         return {"error": f"no existe el archivo: {path}"}
     # CSV: una sola 'hoja' (openpyxl NO lee CSV → no se llama list_sheets).
     if os.path.splitext(path)[1].lower() == ".csv":
         name = default_panel or os.path.splitext(os.path.basename(path))[0]
-        return {"sheets": [{"sheet": name, "rol": _rol(name)}], "total": 1,
-                "curadas": 1 if _rol(name) == "curada" else 0}
+        fmt = _sheet_format(read_headers(path))
+        rol = _rol_sheet(name, fmt)
+        return {"sheets": [{"sheet": name, "rol": rol}], "total": 1,
+                "curadas": 1 if rol in ("curada", "input") else 0}
     try:
         sheets = list_sheets(path)
     except Exception as exc:  # noqa: BLE001
         return {"error": str(exc)}
     out = []
     for s in sheets:
-        up = _norm_sheet(s)
-        out.append({
-            "sheet": s,
-            "rol": "meta" if up == _META_SHEET else ("curada" if up in CURATED else "solo-bd"),
-        })
+        fmt = _sheet_format(read_headers(path, sheet=s))
+        out.append({"sheet": s, "rol": _rol_sheet(s, fmt)})
     return {"sheets": out, "total": len(sheets),
-            "curadas": sum(1 for s in out if s["rol"] == "curada")}
+            "curadas": sum(1 for s in out if s["rol"] in ("curada", "input"))}
 
 
 # ── APPLY ─────────────────────────────────────────────────────────────────────
@@ -82,10 +110,12 @@ def apply(db: Session, path: str, sheets: list[str] | None = None,
     if not os.path.exists(path):
         return {"error": f"no existe el archivo: {path}"}
     # CSV: se ingiere tal cual como un panel único (no aplica el filtro de hojas
-    # curadas; openpyxl NO lee CSV).
+    # curadas; openpyxl NO lee CSV). Puede ser tidy o ancho.
     if os.path.splitext(path)[1].lower() == ".csv":
         name = default_panel or os.path.splitext(os.path.basename(path))[0]
-        n = _ingest_sheet(db, path, None, batch_size, panel=name)
+        fmt = _sheet_format(read_headers(path))
+        n = (_ingest_wide(db, path, None, name, batch_size) if fmt == "wide"
+             else _ingest_sheet(db, path, None, batch_size, panel=name))
         return {"panels": 1 if n else 0, "rows": n,
                 "sheets": [f"{name}({n})"], "only_curated": False}
     try:
@@ -99,13 +129,22 @@ def apply(db: Session, path: str, sheets: list[str] | None = None,
         _upsert_panels(db, path, meta[_META_SHEET])
 
     targets = sheets or [s for s in all_sheets if _norm_sheet(s) != _META_SHEET]
-    if only_curated:
-        targets = [s for s in targets if _norm_sheet(s) in CURATED]
 
     total = 0
     done: list[str] = []
     for sheet in targets:
-        n = _ingest_sheet(db, path, sheet, batch_size)
+        fmt = _sheet_format(read_headers(path, sheet=sheet))
+        if fmt == "wide":
+            # Inputs de escenario: SIEMPRE se ingieren (no aplica curadas). El panel
+            # se nombra con el archivo (Hoja1 no distingue variables_esce de VARIABLES_2).
+            panel = default_panel or sheet
+            n = _ingest_wide(db, path, sheet, panel, batch_size)
+        elif fmt == "tidy":
+            if only_curated and _norm_sheet(sheet) not in CURATED:
+                continue
+            n = _ingest_sheet(db, path, sheet, batch_size)
+        else:
+            continue  # 'meta'/no ingerible
         total += n
         done.append(f"{sheet}({n})")
     return {"panels": len(done), "rows": total, "sheets": done,
@@ -187,6 +226,62 @@ def _ingest_sheet(db: Session, path: str, sheet: str | None, batch_size: int,
         db.commit()
         total += len(batch)
     return total
+
+
+def _ingest_wide(db: Session, path: str, sheet: str | None, panel: str,
+                 batch_size: int) -> int:
+    """Inputs de escenario en formato ANCHO (`Variable | YEAR | Escenario_mw_<N>…`)
+    → economic_series (melt): una fila por (Variable, YEAR, escenario). El MW sale
+    del nombre de columna. Idempotente: reemplaza las filas previas del panel."""
+    t = read_table(path, sheet=sheet)
+    var_h = _find_header(t.headers, ("variable",))
+    year_h = _find_header(t.headers, ("year", "anio", "año"))
+    esc_cols = [(h, _esc_from_header(h)) for h in t.headers
+                if h.strip().lower().startswith("escenario_mw_")]
+    if not esc_cols or not year_h:
+        return 0
+
+    db.execute(delete(EconomicSeries).where(EconomicSeries.panel == panel))
+    db.commit()
+    _upsert_input_panel(db, panel)
+
+    total = 0
+    batch: list[dict] = []
+    for r in t.rows:
+        var = str(r.get(var_h) or "").strip() if var_h else ""
+        anio = _to_int(r.get(year_h))
+        for h, mw in esc_cols:
+            val = _to_float(r.get(h))
+            if val is None:
+                continue
+            batch.append({
+                "panel": panel, "escenario_mw": mw,
+                "cat1": var, "cat2": "", "cat3": "",
+                "anio": anio, "valor": val,
+            })
+            if len(batch) >= batch_size:
+                db.bulk_insert_mappings(EconomicSeries, batch)
+                db.commit()
+                total += len(batch)
+                batch = []
+    if batch:
+        db.bulk_insert_mappings(EconomicSeries, batch)
+        db.commit()
+        total += len(batch)
+    return total
+
+
+def _upsert_input_panel(db: Session, panel: str) -> None:
+    """Registra el panel de inputs en economic_panel (no curado; es driver exógeno)."""
+    p = db.get(EconomicPanel, panel)
+    if p is None:
+        p = EconomicPanel(id=panel)
+        db.add(p)
+    p.nombre = panel
+    if not p.descripcion:
+        p.descripcion = "Inputs de escenario (drivers exógenos del modelo)"
+    p.curado = False
+    db.commit()
 
 
 # ── LECTURA (panel económico de la app) ───────────────────────────────────────
