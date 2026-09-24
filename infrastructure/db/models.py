@@ -169,6 +169,8 @@ class CatalogVariable(Base):
     icon_key: Mapped[str] = mapped_column(String, default="")
     # clase (más fina que `tipo`): modelo|informativa|alerta|excluyente|campo
     clase: Mapped[str] = mapped_column(String, default="informativa")
+    # "Comentarios/ideas sobre la forma de visualización" (InfoVariables informativas).
+    comentarios: Mapped[str] = mapped_column(String, default="")
 
 
 class Norma(Base):
@@ -180,6 +182,13 @@ class Norma(Base):
     descripcion: Mapped[str] = mapped_column(String, default="")
     # aplica | tramite | verificacion | no-aplica
     estado: Mapped[str] = mapped_column(String, default="verificacion")
+    # ── Metadatos de InfoVariables regulatoria (antes se perdían) ──
+    fuente: Mapped[str] = mapped_column(String, default="")
+    url_fuente: Mapped[str] = mapped_column(String, default="")
+    condicion: Mapped[str] = mapped_column(String, default="")   # condición de activación
+    # Código de variable a la que aplica (Regulación-Social/Técnica/Ambiental);
+    # "" en normas generales (REG-…).
+    variable_ref: Mapped[str] = mapped_column(String, default="", index=True)
 
 
 class Escenario(Base):

@@ -29,15 +29,36 @@ def main() -> int:
     parser.add_argument("root", help="carpeta del bundle (con los .h3.parquet)")
     parser.add_argument("--emplazamiento", default="onshore", choices=["onshore", "offshore"])
     parser.add_argument("--plan", action="store_true", help="solo mostrar el plan, no ingerir")
+    parser.add_argument("--pon-only", action="store_true",
+                        help="solo ingerir variables_pon → hexagon_variables_pon (rápido, no toca hexagon)")
     args = parser.parse_args()
 
     db = SessionLocal()
     try:
+        if args.pon_only:
+            n = bundle_service._ingest_pon(db, args.root, args.emplazamiento)
+            if n:
+                print(f"OK ponderadas: {n} hexágonos en hexagon_variables_pon ({args.emplazamiento}).")
+            else:
+                print("⚠ No se ingirió nada. ¿Falta 'variables_pon.h3.parquet' en la carpeta "
+                      "o el emplazamiento no es onshore?", file=sys.stderr)
+            return 0 if n else 3
         plan = bundle_service.plan(db, args.root)
         if "error" in plan:
             print(plan["error"], file=sys.stderr)
             return 2
         s = plan["summary"]
+        # Archivos detectados (el plan deduplica columnas por nombre → la de
+        # PONDERADAS `variables_pon.h3.parquet` no re-lista sus columnas, pero SÍ
+        # se ingiere aparte a `hexagon_variables_pon`; se ve aquí que está).
+        print("\nARCHIVOS DETECTADOS:")
+        for f in plan.get("files", []):
+            if "error" in f:
+                print(f"  ⚠ {f['path']}: {f['error']}")
+            else:
+                pon = "  ← PONDERADAS" if "variables_pon" in f["path"] else ""
+                print(f"  {f['path']:<48} {f.get('rows', 0):>12,} filas · "
+                      f"{f.get('columns', 0)} cols{pon}")
         # Tabla legible columna → CLASE detectada → destino (como en la HU de
         # conciliación). Se imprime SIEMPRE (antes de ingerir) para trazabilidad.
         print(f"\n{'COLUMNA':<22} {'CLASE':<22} {'ESTADO':<10} DESTINO")
@@ -61,6 +82,12 @@ def main() -> int:
             return 3
         print(f"OK (destructiva/blue-green): {result['rows']} hexágonos ingeridos "
               f"({result['emplazamiento']}). Archivos: {', '.join(result['files'])}")
+        # Ponderadas → tabla propia (variables_pon.h3.parquet → hexagon_variables_pon).
+        n_pon = result.get("rows_pon", 0)
+        if n_pon:
+            print(f"OK ponderadas: {n_pon} hexágonos en hexagon_variables_pon.")
+        else:
+            print("⚠ Sin ponderadas ingeridas (¿falta variables_pon.h3.parquet en la carpeta?).")
         return 0
     finally:
         db.close()

@@ -64,6 +64,7 @@ def _var_to_dict(v: CatalogVariable) -> dict:
         "clase": v.clase,
         "subcriterioId": v.subcriterio_id,
         "iconKey": v.icon_key,
+        "comentarios": v.comentarios,
     }
 
 
@@ -98,6 +99,7 @@ _VAR_FIELDS = {
     "clase": "clase",
     "subcriterioId": "subcriterio_id",
     "iconKey": "icon_key",
+    "comentarios": "comentarios",
 }
 
 
@@ -150,23 +152,36 @@ def update_dataset(db: Session, var_id: str, version: str) -> dict | None:
 # ── Normas ───────────────────────────────────────────────────────────────────
 
 def _norma_to_dict(n: Norma) -> dict:
-    return {"id": n.id, "nombre": n.nombre, "descripcion": n.descripcion, "estado": n.estado}
+    return {"id": n.id, "nombre": n.nombre, "descripcion": n.descripcion,
+            "estado": n.estado, "fuente": n.fuente, "url": n.url_fuente,
+            "condicion": n.condicion, "variableRef": n.variable_ref}
 
 
 def list_normas(db: Session) -> list[dict]:
     return [_norma_to_dict(n) for n in repo.list_normas(db)]
 
 
+_NORMA_BODY = {"fuente": "fuente", "url": "url_fuente", "condicion": "condicion",
+               "variableRef": "variable_ref"}
+
+
 def create_norma(db: Session, body: dict) -> dict:
-    return _norma_to_dict(repo.create_norma(db, {
+    data = {
         "nombre": body.get("nombre", ""),
         "descripcion": body.get("descripcion", ""),
         "estado": body.get("estado", "verificacion"),
-    }))
+    }
+    for camel, attr in _NORMA_BODY.items():
+        if camel in body:
+            data[attr] = body[camel]
+    return _norma_to_dict(repo.create_norma(db, data))
 
 
 def update_norma(db: Session, norma_id: str, body: dict) -> dict | None:
     patch = {k: body[k] for k in ("nombre", "descripcion", "estado") if k in body}
+    for camel, attr in _NORMA_BODY.items():
+        if camel in body:
+            patch[attr] = body[camel]
     n = repo.update_norma(db, norma_id, patch)
     return _norma_to_dict(n) if n else None
 

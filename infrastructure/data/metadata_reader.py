@@ -93,6 +93,32 @@ def _read_xlsx(path: str, sheet: str | None, header_row: int = 1) -> DocTable:
         wb.close()
 
 
+def read_headers(path: str, sheet: str | None = None, header_row: int = 1) -> list[str]:
+    """Solo los ENCABEZADOS (barato: no lee las filas). Para autodetectar el tipo
+    de doc sin cargar millones de filas."""
+    ext = os.path.splitext(path)[1].lower()
+    if ext == ".csv":
+        for enc in ("utf-8-sig", "utf-8", "latin-1"):
+            try:
+                with open(path, newline="", encoding=enc) as fh:
+                    return _dedup_headers([str(c) for c in next(csv.reader(fh), [])])
+            except UnicodeDecodeError:
+                continue
+        return []
+    if ext in (".xlsx", ".xlsm"):
+        import openpyxl  # noqa: PLC0415
+        wb = openpyxl.load_workbook(path, read_only=True, data_only=True)
+        try:
+            ws = wb[sheet] if sheet else wb[wb.sheetnames[0]]
+            for i, row in enumerate(ws.iter_rows(values_only=True), start=1):
+                if i == header_row:
+                    return _dedup_headers([("" if c is None else str(c).strip()) for c in row])
+            return []
+        finally:
+            wb.close()
+    return []
+
+
 def read_table(path: str, sheet: str | None = None, header_row: int = 1) -> DocTable:
     """Lee un CSV o XLSX → (headers, rows). `sheet`/`header_row` solo para xlsx."""
     ext = os.path.splitext(path)[1].lower()
