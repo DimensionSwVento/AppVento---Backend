@@ -42,13 +42,26 @@ def _slug(s: str) -> str:
     return "-".join(p for p in out.split("-") if p)
 
 
+def _panel_name(name: str | None) -> str | None:
+    """Nombre de panel a partir del nombre de archivo original (sin extensión)."""
+    if not name:
+        return None
+    return os.path.splitext(os.path.basename(name))[0] or None
+
+
 def _detect_kind(path: str) -> str:
     """Autodetecta el tipo de doc por sus encabezados (barato, solo cabeceras):
-    'economic' si alguna hoja/columna trae `escenario_mw` + `valor` (panel macro);
-    si no, 'infovariables' (catálogo). Un solo drag → se rutea solo."""
+    'economic' si alguna hoja trae el panel de salida (`escenario_mw` + `valor`, tidy)
+    O los inputs de escenario (columnas `escenario_mw_<N>`, ancho — el nombre de
+    archivo puede cambiar, por eso se detecta por COLUMNAS); si no, 'infovariables'
+    (catálogo). Un solo drag → se rutea solo."""
     def _is_eco(headers: list[str]) -> bool:
         hs = {h.strip().lower() for h in headers}
-        return "escenario_mw" in hs and "valor" in hs
+        # panel de salida (tidy): escenario_mw + valor.
+        if "escenario_mw" in hs and "valor" in hs:
+            return True
+        # inputs de escenario (ancho): Variable × YEAR × Escenario_mw_<N>.
+        return any(h.startswith("escenario_mw_") for h in hs)
 
     ext = os.path.splitext(path)[1].lower()
     try:
@@ -158,14 +171,15 @@ def _is_norma_row(master_id: str, dim_id: str) -> bool:
 # ── FASE A — PLAN ─────────────────────────────────────────────────────────────
 
 def plan(db: Session, path: str, perfil: str = "infovariables",
-         sheet: str | None = None) -> dict:
+         sheet: str | None = None, name: str | None = None) -> dict:
     """Qué columnas del doc se mapean y cuáles se omiten (sin mapear).
-    Autodetecta: si es panel económico, rutea a economic_ingest.plan."""
+    Autodetecta: si es panel económico, rutea a economic_ingest.plan. `name` = nombre
+    original del archivo (para nombrar el panel cuando es un CSV económico suelto)."""
     if not os.path.exists(path):
         return {"error": f"no existe el archivo: {path}"}
     if _detect_kind(path) == "economic":
         from application.services import economic_ingest  # noqa: PLC0415
-        p = economic_ingest.plan(path)
+        p = economic_ingest.plan(path, default_panel=_panel_name(name))
         if "error" not in p:
             p["tipo"] = "economic"
         return p
@@ -222,15 +236,17 @@ def upsert_mapping(db: Session, perfil: str, encabezado: str, body: dict) -> dic
 # ── FASE C — APLICAR (upsert de la jerarquía + variables) ────────────────────
 
 def apply(db: Session, path: str, perfil: str = "infovariables",
-          sheet: str | None = None) -> dict:
+          sheet: str | None = None, name: str | None = None) -> dict:
     """Upsert `dimension → criterio → subcriterio → variable` desde el doc.
     Concilia la variable por `master_id`; la jerarquía por nombre/`code`.
-    Autodetecta: si es panel económico, rutea a economic_ingest.apply."""
+    Autodetecta: si es panel económico, rutea a economic_ingest.apply. `name` =
+    nombre original del archivo (para nombrar el panel de un CSV económico suelto)."""
     if not os.path.exists(path):
         return {"error": f"no existe el archivo: {path}"}
     if _detect_kind(path) == "economic":
         from application.services import economic_ingest  # noqa: PLC0415
-        r = economic_ingest.apply(db, path, only_curated=True)
+        r = economic_ingest.apply(db, path, only_curated=True,
+                                  default_panel=_panel_name(name))
         if "error" not in r:
             r["tipo"] = "economic"
         return r
@@ -288,6 +304,13 @@ def apply(db: Session, path: str, perfil: str = "infovariables",
 
         # Fila separadora / vacía: sin variable NI master_id → se ignora.
         if not label and not master_id:
+            continue
+
+        # Sub-encabezado repetido a mitad del archivo (InfoVariables c repite la
+        # cabecera antes del bloque regulatorio): su "master_id" es en realidad el
+        # texto del encabezado ("ID (Mostrar en el detalle)"). Los códigos reales
+        # (REG-001-L, AMB-005-A, TEC…) no llevan espacios ni paréntesis → se descarta.
+        if master_id and (" " in master_id or "(" in master_id):
             continue
 
         # REGULATORIA → catalog_norma (no catalog_variable). Se rutea por código

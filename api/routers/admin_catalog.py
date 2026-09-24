@@ -128,7 +128,7 @@ def metadata_plan(
     if not path:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, detail="Falta 'path'")
     result = metadata_ingest.plan(db, path, body.get("perfil") or "infovariables",
-                                  body.get("sheet"))
+                                  body.get("sheet"), body.get("name"))
     if "error" in result:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, detail=result["error"])
     return result
@@ -171,7 +171,7 @@ def metadata_apply(
         raise HTTPException(status.HTTP_400_BAD_REQUEST, detail="Falta 'path'")
     try:
         result = metadata_ingest.apply(db, path, body.get("perfil") or "infovariables",
-                                       body.get("sheet"))
+                                       body.get("sheet"), body.get("name"))
     except Exception as exc:  # noqa: BLE001
         raise HTTPException(status.HTTP_502_BAD_GATEWAY, detail=f"Ingesta falló: {exc}")
     if "error" in result:
