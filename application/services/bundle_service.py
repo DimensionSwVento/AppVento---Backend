@@ -417,7 +417,6 @@ def _ingest_pon(db: Session, root: str, emplazamiento: str) -> int:
     df = pd.read_parquet(paths[0])
     if "h3_index" not in df.columns:
         return 0
-    cols = [c for c in df.columns if c != "h3_index"]
     columns = list(df.columns)
     h3_pos = columns.index("h3_index")
 

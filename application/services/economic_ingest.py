@@ -16,7 +16,7 @@ almacena para trazabilidad. Ver docs/spec/modelo-datos-anidado.md §6.3.
 from __future__ import annotations
 import os
 
-from sqlalchemy import delete, func, select
+from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
 
 from infrastructure.db.models import EconomicPanel, EconomicSeries
