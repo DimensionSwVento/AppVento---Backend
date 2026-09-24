@@ -41,10 +41,21 @@ def _norm_sheet(name: str) -> str:
 
 # ── PLAN ──────────────────────────────────────────────────────────────────────
 
-def plan(path: str) -> dict:
-    """Lista las hojas del xlsx y marca cuáles son curadas / meta."""
+def _rol(name: str) -> str:
+    up = _norm_sheet(name)
+    return "meta" if up == _META_SHEET else ("curada" if up in CURATED else "solo-bd")
+
+
+def plan(path: str, default_panel: str | None = None) -> dict:
+    """Lista las hojas (xlsx) o la única 'hoja' (csv) y su rol. `default_panel` =
+    nombre a usar como panel cuando es un CSV suelto (p.ej. el nombre del archivo)."""
     if not os.path.exists(path):
         return {"error": f"no existe el archivo: {path}"}
+    # CSV: una sola 'hoja' (openpyxl NO lee CSV → no se llama list_sheets).
+    if os.path.splitext(path)[1].lower() == ".csv":
+        name = default_panel or os.path.splitext(os.path.basename(path))[0]
+        return {"sheets": [{"sheet": name, "rol": _rol(name)}], "total": 1,
+                "curadas": 1 if _rol(name) == "curada" else 0}
     try:
         sheets = list_sheets(path)
     except Exception as exc:  # noqa: BLE001
@@ -63,11 +74,20 @@ def plan(path: str) -> dict:
 # ── APPLY ─────────────────────────────────────────────────────────────────────
 
 def apply(db: Session, path: str, sheets: list[str] | None = None,
-          only_curated: bool = True, batch_size: int = 5000) -> dict:
-    """Ingiere el xlsx. Por defecto SOLO las hojas curadas (las que ve la app);
-    `only_curated=False` ingiere todas (incluye RESULTADOSPOT, ~453k filas)."""
+          only_curated: bool = True, batch_size: int = 5000,
+          default_panel: str | None = None) -> dict:
+    """Ingiere el xlsx (por hoja) o un CSV suelto (una hoja única). Por defecto solo
+    las hojas curadas; `only_curated=False` ingiere todas. `default_panel` = nombre
+    del panel cuando es CSV (p.ej. el nombre del archivo)."""
     if not os.path.exists(path):
         return {"error": f"no existe el archivo: {path}"}
+    # CSV: se ingiere tal cual como un panel único (no aplica el filtro de hojas
+    # curadas; openpyxl NO lee CSV).
+    if os.path.splitext(path)[1].lower() == ".csv":
+        name = default_panel or os.path.splitext(os.path.basename(path))[0]
+        n = _ingest_sheet(db, path, None, batch_size, panel=name)
+        return {"panels": 1 if n else 0, "rows": n,
+                "sheets": [f"{name}({n})"], "only_curated": False}
     try:
         all_sheets = list_sheets(path)
     except Exception as exc:  # noqa: BLE001
@@ -125,9 +145,12 @@ def _find_header(headers: list[str], keys: tuple[str, ...]) -> str | None:
     return None
 
 
-def _ingest_sheet(db: Session, path: str, sheet: str, batch_size: int) -> int:
-    """Una hoja tidy → economic_series (reemplaza las filas previas de ese panel)."""
+def _ingest_sheet(db: Session, path: str, sheet: str | None, batch_size: int,
+                  panel: str | None = None) -> int:
+    """Una hoja/CSV tidy → economic_series (reemplaza las filas previas del panel).
+    `panel` = nombre del panel (para CSV, donde `sheet` es None)."""
     t = read_table(path, sheet=sheet)
+    panel_name = panel or sheet or "IMPORT"
     esc_h = _find_header(t.headers, ("escenario_mw", "escenario"))
     anio_h = _find_header(t.headers, ("anio", "año", "year"))
     val_h = _find_header(t.headers, ("valor", "value"))
@@ -136,7 +159,7 @@ def _ingest_sheet(db: Session, path: str, sheet: str, batch_size: int) -> int:
         return 0
 
     # Idempotente: borra las filas previas de este panel antes de recargar.
-    db.execute(delete(EconomicSeries).where(EconomicSeries.panel == sheet))
+    db.execute(delete(EconomicSeries).where(EconomicSeries.panel == panel_name))
     db.commit()
 
     total = 0
@@ -148,7 +171,7 @@ def _ingest_sheet(db: Session, path: str, sheet: str, batch_size: int) -> int:
         cats = [str(r.get(h) or "").strip() for h in cat_hs[:3]]
         cats += [""] * (3 - len(cats))
         batch.append({
-            "panel": sheet,
+            "panel": panel_name,
             "escenario_mw": _to_int(r.get(esc_h)) if esc_h else 0,
             "cat1": cats[0], "cat2": cats[1], "cat3": cats[2],
             "anio": _to_int(r.get(anio_h)) if anio_h else 0,

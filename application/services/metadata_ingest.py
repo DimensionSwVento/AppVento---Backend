@@ -42,6 +42,13 @@ def _slug(s: str) -> str:
     return "-".join(p for p in out.split("-") if p)
 
 
+def _panel_name(name: str | None) -> str | None:
+    """Nombre de panel a partir del nombre de archivo original (sin extensión)."""
+    if not name:
+        return None
+    return os.path.splitext(os.path.basename(name))[0] or None
+
+
 def _detect_kind(path: str) -> str:
     """Autodetecta el tipo de doc por sus encabezados (barato, solo cabeceras):
     'economic' si alguna hoja/columna trae `escenario_mw` + `valor` (panel macro);
@@ -158,14 +165,15 @@ def _is_norma_row(master_id: str, dim_id: str) -> bool:
 # ── FASE A — PLAN ─────────────────────────────────────────────────────────────
 
 def plan(db: Session, path: str, perfil: str = "infovariables",
-         sheet: str | None = None) -> dict:
+         sheet: str | None = None, name: str | None = None) -> dict:
     """Qué columnas del doc se mapean y cuáles se omiten (sin mapear).
-    Autodetecta: si es panel económico, rutea a economic_ingest.plan."""
+    Autodetecta: si es panel económico, rutea a economic_ingest.plan. `name` = nombre
+    original del archivo (para nombrar el panel cuando es un CSV económico suelto)."""
     if not os.path.exists(path):
         return {"error": f"no existe el archivo: {path}"}
     if _detect_kind(path) == "economic":
         from application.services import economic_ingest  # noqa: PLC0415
-        p = economic_ingest.plan(path)
+        p = economic_ingest.plan(path, default_panel=_panel_name(name))
         if "error" not in p:
             p["tipo"] = "economic"
         return p
@@ -222,15 +230,17 @@ def upsert_mapping(db: Session, perfil: str, encabezado: str, body: dict) -> dic
 # ── FASE C — APLICAR (upsert de la jerarquía + variables) ────────────────────
 
 def apply(db: Session, path: str, perfil: str = "infovariables",
-          sheet: str | None = None) -> dict:
+          sheet: str | None = None, name: str | None = None) -> dict:
     """Upsert `dimension → criterio → subcriterio → variable` desde el doc.
     Concilia la variable por `master_id`; la jerarquía por nombre/`code`.
-    Autodetecta: si es panel económico, rutea a economic_ingest.apply."""
+    Autodetecta: si es panel económico, rutea a economic_ingest.apply. `name` =
+    nombre original del archivo (para nombrar el panel de un CSV económico suelto)."""
     if not os.path.exists(path):
         return {"error": f"no existe el archivo: {path}"}
     if _detect_kind(path) == "economic":
         from application.services import economic_ingest  # noqa: PLC0415
-        r = economic_ingest.apply(db, path, only_curated=True)
+        r = economic_ingest.apply(db, path, only_curated=True,
+                                  default_panel=_panel_name(name))
         if "error" not in r:
             r["tipo"] = "economic"
         return r
