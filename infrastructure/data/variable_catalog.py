@@ -14,17 +14,21 @@ cerrado. Mientras esté vacío, se usa un fallback legible del propio código.
 """
 from __future__ import annotations
 
-# Dimensión (categoría) por prefijo.
+# Dimensión (categoría) por prefijo. Alineado al modelo anidado (§2):
+#  - SOE (económico-social) y SOC puntúan DENTRO de **Social** (no es una dim aparte).
+#  - la macro es **ECO** (informativa), no "MAC".
+# Es solo FALLBACK: el label real de dimensión sale de `catalog_dimension` (BD).
 DIMENSIONS: dict[str, str] = {
     "TEC": "Técnica",
     "AMB": "Ambiental",
-    "SOE": "Socioeconómica",
-    "MAC": "Macroeconómica",
+    "SOE": "Social",
+    "SOC": "Social",
+    "ECO": "Económica",
     "REG": "Regulatoria",
 }
 
-# Código base → nombre legible.  ⚠️ PLACEHOLDER: completar con el catálogo real.
-# Ejemplos (descomentar/ajustar con los nombres definitivos):
+# Código base → nombre legible. Overrides opcionales: si un código no está
+# aquí, get_variable_label devuelve el propio código. Ejemplos de formato:
 LABELS: dict[str, str] = {
     # "TEC_001": "Velocidad de viento",
     # "TEC_004": "Densidad de energía",

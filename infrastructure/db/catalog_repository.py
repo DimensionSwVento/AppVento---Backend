@@ -133,3 +133,23 @@ def update_turbine(db: Session, turbine_id: str, patch: dict) -> Turbine | None:
     db.commit()
     db.refresh(t)
     return t
+
+
+def create_turbine(db: Session, turbine_id: str, data: dict) -> Turbine | None:
+    """Crea una turbina. Devuelve None si el id ya existe (el caller → 409)."""
+    if db.get(Turbine, turbine_id) is not None:
+        return None
+    t = Turbine(id=turbine_id, **data)
+    db.add(t)
+    db.commit()
+    db.refresh(t)
+    return t
+
+
+def delete_turbine(db: Session, turbine_id: str) -> bool:
+    t = db.get(Turbine, turbine_id)
+    if t is None:
+        return False
+    db.delete(t)
+    db.commit()
+    return True

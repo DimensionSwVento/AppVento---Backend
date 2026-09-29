@@ -7,11 +7,11 @@ from __future__ import annotations
 
 from datetime import date
 
-from sqlalchemy import text
+from sqlalchemy import select, text
 from sqlalchemy.orm import Session
 
 from infrastructure.db import catalog_repository as repo
-from infrastructure.db.models import CatalogVariable, Escenario, Norma
+from infrastructure.db.models import CatalogVariable, Dimension, Escenario, Norma
 from infrastructure.data.variable_catalog import DIMENSIONS
 
 # Etiqueta de dimensión por id (para `dimensionLabel`).
@@ -28,14 +28,48 @@ def _dim_label(dim: str) -> str:
     return _DIM_LABEL.get(dim) or DIMENSIONS.get(dim.upper()[:3], dim)
 
 
+def _dim_label_map(db: Session) -> dict[str, str]:
+    """`{dim_id → nombre}` desde `catalog_dimension` (BD, ingerido de InfoVariables).
+    Es la fuente REAL del nombre de dimensión; `_dim_label` es solo fallback."""
+    return {d.id: d.nombre for d in db.scalars(select(Dimension)) if d.nombre}
+
+
+def _mid_base(master_id: str) -> str:
+    """`master_id` del catálogo (AMB-012-A, SOC-001-SE) → `base_code` del parquet
+    (AMB_012, SOC_001) para casar con las columnas crudas de la master."""
+    parts = master_id.replace("-", "_").split("_")
+    return f"{parts[0]}_{parts[1]}" if len(parts) >= 2 else master_id
+
+
+def tile_labels(db: Session) -> dict[str, dict]:
+    """Mapa `base_code → {label, dimension, dimensionLabel}` desde `catalog_variable`
+    (BD, ingerido de InfoVariables). Lo consume el runtime de tiles para etiquetar
+    variables con el dato REAL en vez del stub `variable_catalog`. Vacío si aún no
+    se ingirió nada → el tile cae al nombre derivado del código (real o nada)."""
+    dim_names = _dim_label_map(db)
+    out: dict[str, dict] = {}
+    for v in repo.list_variables(db):
+        if not v.master_id or v.master_id.upper() in ("NA", ""):
+            continue
+        out[_mid_base(v.master_id)] = {
+            "label": v.label,
+            "dimension": v.dimension,
+            "dimensionLabel": dim_names.get(v.dimension) or _dim_label(v.dimension),
+        }
+    return out
+
+
 # ── Variables ────────────────────────────────────────────────────────────────
 
-def _var_to_dict(v: CatalogVariable) -> dict:
+def _var_to_dict(v: CatalogVariable, dim_names: dict[str, str] | None = None) -> dict:
     return {
         "id": v.id,
         "label": v.label,
         "dimension": v.dimension,
-        "dimensionLabel": v.dimension_label or _dim_label(v.dimension),
+        # Nombre de dimensión: BD (`catalog_dimension`) → denormalizado → fallback.
+        "dimensionLabel": (dim_names or {}).get(v.dimension)
+        or v.dimension_label
+        or _dim_label(v.dimension),
         "tipo": v.tipo,
         "enabled": v.enabled,
         "enMapa": v.en_mapa,
@@ -65,6 +99,7 @@ def _var_to_dict(v: CatalogVariable) -> dict:
         "subcriterioId": v.subcriterio_id,
         "iconKey": v.icon_key,
         "comentarios": v.comentarios,
+        "metodoCalculo": v.metodo_calculo,
     }
 
 
@@ -100,6 +135,7 @@ _VAR_FIELDS = {
     "subcriterioId": "subcriterio_id",
     "iconKey": "icon_key",
     "comentarios": "comentarios",
+    "metodoCalculo": "metodo_calculo",
 }
 
 
@@ -112,7 +148,8 @@ def _var_body_to_columns(body: dict) -> dict:
 
 
 def list_variables(db: Session, tipo: str | None) -> list[dict]:
-    return [_var_to_dict(v) for v in repo.list_variables(db, tipo)]
+    dim_names = _dim_label_map(db)
+    return [_var_to_dict(v, dim_names) for v in repo.list_variables(db, tipo)]
 
 
 def create_variable(db: Session, body: dict) -> dict:
@@ -265,6 +302,21 @@ def update_turbine(db: Session, turbine_id: str, body: dict) -> dict | None:
     patch = {col: body[camel] for camel, col in _TURBINE_FIELDS.items() if camel in body}
     t = repo.update_turbine(db, turbine_id, patch)
     return _turbine_to_dict(t) if t else None
+
+
+def create_turbine(db: Session, body: dict) -> dict | None:
+    """Crea una turbina (CRUD admin). `id` explícito o derivado del label. Los specs
+    (área/espaciamiento/MW) son de ingeniería, editables en admin — no vienen del
+    cliente. Devuelve None si el id ya existe."""
+    tid = (str(body.get("id") or "").strip() or _slug(str(body.get("label") or "")))
+    data = {col: body[camel] for camel, col in _TURBINE_FIELDS.items() if camel in body}
+    data.setdefault("label", tid)  # label es NOT NULL
+    t = repo.create_turbine(db, tid, data)
+    return _turbine_to_dict(t) if t else None
+
+
+def delete_turbine(db: Session, turbine_id: str) -> bool:
+    return repo.delete_turbine(db, turbine_id)
 
 
 # ── util ─────────────────────────────────────────────────────────────────────

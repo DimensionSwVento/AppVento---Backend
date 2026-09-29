@@ -16,7 +16,7 @@ from fastapi import APIRouter, Body, Depends, File, HTTPException, Query, Upload
 from sqlalchemy.orm import Session
 
 from application.services import (
-    catalog_service, catalog_ingest, metadata_ingest, economic_ingest,
+    catalog_service, config_service, metadata_ingest, economic_ingest,
 )
 from infrastructure.auth.keycloak_guard import CurrentUser, require_admin, require_user
 from infrastructure.db.session import get_db
@@ -355,30 +355,57 @@ def update_turbine(
     return updated
 
 
-# ── Fuentes de datos e ingesta de docs (dónde se guarda cada fuente) ──────────
-
-@router.get("/sources")
-def list_sources(
-    _admin: CurrentUser = Depends(require_admin),
-    db: Session = Depends(get_db),
-) -> list[dict]:
-    """Registro de fuentes: dónde se guarda cada doc (master/CSV/JSON) + estado."""
-    return catalog_ingest.list_sources(db)
-
-
-@router.post("/ingest/{source}")
-def ingest_source(
-    source: str,
+@router.post("/turbines")  # crear (specs de ingeniería, editables en admin)
+def create_turbine(
+    body: dict = Body(...),
     _admin: CurrentUser = Depends(require_admin),
     db: Session = Depends(get_db),
 ) -> dict:
-    """Update normal desde el archivo del doc: UPSERT (actualiza y añade, no borra).
-    La ingesta DESTRUCTIVA (reemplazo total) es solo por consola
-    (`python -m tools.ingest_docs <source> --destructive`)."""
-    try:
-        result = catalog_ingest.ingest(db, source)  # destructive=False
-    except Exception as exc:  # noqa: BLE001
-        raise HTTPException(status.HTTP_502_BAD_GATEWAY, detail=f"Ingesta falló: {exc}")
-    if result is None:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, detail=f"Fuente '{source}' no registrada")
-    return result
+    created = catalog_service.create_turbine(db, body)
+    if created is None:
+        raise HTTPException(status.HTTP_409_CONFLICT, detail="Ya existe una turbina con ese id")
+    return created
+
+
+@router.delete("/turbines/{turbine_id}")
+def delete_turbine(
+    turbine_id: str,
+    _admin: CurrentUser = Depends(require_admin),
+    db: Session = Depends(get_db),
+) -> dict:
+    if not catalog_service.delete_turbine(db, turbine_id):
+        raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Turbina no encontrada")
+    return {"ok": True}
+
+
+# ── Fuentes de datos e ingesta de docs ────────────────────────────────────────
+# Las rutas HTTP GET /sources y POST /ingest/{source} se ELIMINARON (#3): re-ingerían
+# los SEEDS (*_seed.csv) por un clic de admin y pisaban los datos curados en BD
+# (peso/polaridad/masterId editados) → corrupción silenciosa.
+# El CATÁLOGO DE VARIABLES ya NO tiene seed json: su única fuente de verdad es la BD,
+# poblada por la ingesta de InfoVariables (`metadata_ingest`). Real o vacío, sin proxy.
+# La re-ingesta controlada de los otros docs sigue disponible SOLO por consola:
+#   python -m tools.ingest_docs <source> [--destructive]
+# El service `catalog_ingest` (ingest/list_sources/sync_sources) se conserva porque
+# lo usan ese tool y el sync de arranque (main.py).
+
+
+# ── Config editable clave→valor (US08 · Resumen del cálculo) ──────────────────
+@router.get("/config/{key}")  # lectura: el informe consume p.ej. report_calc_text
+def get_config(
+    key: str,
+    _user: CurrentUser = Depends(require_user),
+    db: Session = Depends(get_db),
+) -> dict:
+    """Valor JSON de `key`. `{}` si no está fijado (el front usa sus defaults)."""
+    return config_service.get_config(db, key) or {}
+
+
+@router.patch("/config/{key}")
+def patch_config(
+    key: str,
+    body: dict = Body(...),
+    _admin: CurrentUser = Depends(require_admin),
+    db: Session = Depends(get_db),
+) -> dict:
+    return config_service.set_config(db, key, body)
