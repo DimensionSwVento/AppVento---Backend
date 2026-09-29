@@ -34,9 +34,14 @@ ExecStartPre=/opt/AppVento---Backend/.venv/bin/alembic upgrade head
 # gunicorn mataba el worker a mitad de ingesta → el BFF veía el backend caído
 # ("backend unreachable"). -w 2 deja el otro worker sirviendo mapa/scores mientras
 # uno ingiere. --graceful-timeout acompaña al timeout para no cortar en el apagado.
+# --max-requests 200 (+jitter): recicla cada worker cada ~200 requests para LIBERAR
+# la RAM acumulada (fragmentación/picos de consultas grandes) → evita que el
+# OOM-killer mate gunicorn. Complemento recomendado: añadir swap y/o subir RAM del
+# server; la agregación por `res` en /tiles/variable ya acota el pico por request.
 ExecStart=/opt/AppVento---Backend/.venv/bin/gunicorn main:app \
     -k uvicorn.workers.UvicornWorker \
-    -w 2 -b 0.0.0.0:8000 --timeout 1800 --graceful-timeout 1800
+    -w 2 -b 0.0.0.0:8000 --timeout 1800 --graceful-timeout 1800 \
+    --max-requests 200 --max-requests-jitter 50
 
 Restart=on-failure
 RestartSec=5

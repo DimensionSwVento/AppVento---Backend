@@ -76,6 +76,22 @@ class PostgresHexagonSource:
         )
         return [_to_row(r) for r in self.db.execute(stmt)]
 
+    def stream_bbox(self, west: float, south: float, east: float, north: float):
+        """Como `fetch_bbox` pero STREAMING (cursor de servidor + `yield_per`): NO
+        materializa todo el bbox en RAM. Para agregar la capa de una variable sobre
+        zonas grandes sin reventar la memoria (causa del OOM en `/tiles/variable`).
+        Cada lote se procesa y se libera; el llamador solo retiene el agregado."""
+        stmt = (
+            select(*_COLS)
+            .where(
+                Hexagon.lat >= south, Hexagon.lat <= north,
+                Hexagon.lng >= west,  Hexagon.lng <= east,
+            )
+            .execution_options(stream_results=True, yield_per=20_000)
+        )
+        for r in self.db.execute(stmt):
+            yield _to_row(r)
+
     # ── Metadatos ────────────────────────────────────────────────────────────
     def variable_names(self) -> list[str]:
         return list(self.db.scalars(select(HexagonMeta.variable).order_by(HexagonMeta.variable)))

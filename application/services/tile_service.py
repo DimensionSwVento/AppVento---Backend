@@ -13,6 +13,8 @@ import hashlib
 import logging
 from typing import Optional
 
+import h3
+
 from shared.config import PARQUET_PATH, HEXAGON_INGEST, OFFSHORE_VAR
 from infrastructure.data.variable_catalog import dimension_of, get_variable_label, base_code
 from infrastructure.data import model_weights
@@ -200,17 +202,21 @@ def _resolve_code(available: list[str], code: str, subtemplate: bool) -> tuple[O
 def get_variable_layer(source: HexagonSource, code: str,
                        bbox: Optional[dict] = None,
                        threshold: float = 0.0,
-                       subtemplate: bool = False) -> list[dict]:
+                       subtemplate: bool = False,
+                       res: Optional[int] = None) -> list[dict]:
     """
-    Capa de una variable a nivel país/bbox en res8 (US04-03 · `map-res8-contract`):
-    `[{h3_index, value}]` con el valor normalizado 0–1 donde la variable está
-    presente, acotado por bbox y umbral. Sin bbox usa Colombia entera.
+    Capa de una variable en un bbox: `[{h3_index, value}]` con el valor normalizado
+    0–1 donde la variable está presente. Sin bbox usa Colombia entera.
+
+    MEMORIA (evita OOM): lee el bbox en STREAMING (no materializa millones de
+    filas) y, si se pasa `res`, AGREGA al hexágono padre de esa resolución
+    (promedio) → la respuesta es de miles de filas, no de millones. `res` = la
+    resolución del zoom (el mapa ya pinta con resumen de padres).
 
     `subtemplate`: si el `code` no se reconoce, usa una variable disponible al
     azar (determinista) — modo puente hasta conocer el mapeo real de códigos.
     """
     b = bbox or _COLOMBIA_BBOX
-    rows = source.fetch_bbox(b["west"], b["south"], b["east"], b["north"])
     available = source.variable_names()
     eff_code, is_sub = _resolve_code(available, code, subtemplate)
     if eff_code is None:
@@ -218,6 +224,23 @@ def get_variable_layer(source: HexagonSource, code: str,
     if is_sub:
         log.info("tiles/variable: '%s' no reconocido → subtemplate '%s'.", code, eff_code)
     var_range = source.variable_range(eff_code)
+    rows = source.stream_bbox(b["west"], b["south"], b["east"], b["north"])
+
+    if res is not None:
+        # Agrega al padre `res` sobre la marcha: solo el dict agregado vive en RAM.
+        agg: dict[str, tuple[float, int]] = {}
+        for hx in rows:
+            _, v = variable_engine.resolve_value(hx, eff_code, available, var_range, "normalized")
+            if v is None or v < threshold:
+                continue
+            try:
+                parent = h3.cell_to_parent(hx.h3_index, res)  # res≥8 → mismo hex
+            except Exception:  # noqa: BLE001 — res más fina que el dato → sin agregar
+                parent = hx.h3_index
+            s, c = agg.get(parent, (0.0, 0))
+            agg[parent] = (s + v, c + 1)
+        return [{"h3_index": p, "value": s / c} for p, (s, c) in agg.items()]
+
     out: list[dict] = []
     for hx in rows:
         _, value_norm = variable_engine.resolve_value(
