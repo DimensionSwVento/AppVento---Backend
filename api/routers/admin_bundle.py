@@ -84,6 +84,27 @@ def upsert_column(
     return bundle_service.upsert_column(db, name, body)
 
 
+@router.post("/columns/{name}/rename")
+def rename_column(
+    name: str,
+    body: dict = Body(...),
+    _admin: CurrentUser = Depends(require_admin),
+    db: Session = Depends(get_db),
+) -> dict:
+    """Renombra una columna del registro (la fuente cambió el nombre de columna).
+    Copia el mapeo al nuevo nombre y borra el viejo → la app la sigue consumiendo."""
+    new_name = str(body.get("newName", "")).strip()
+    if not new_name:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, detail="newName requerido")
+    try:
+        out = bundle_service.rename_column(db, name, new_name)
+    except ValueError as e:
+        raise HTTPException(status.HTTP_409_CONFLICT, detail=str(e))
+    if out is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Columna no encontrada")
+    return out
+
+
 @router.post("/apply")
 def apply_bundle(
     body: dict = Body(...),

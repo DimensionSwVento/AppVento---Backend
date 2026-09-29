@@ -158,7 +158,7 @@ class CatalogVariable(Base):
     no_calculo: Mapped[bool] = mapped_column(Boolean, default=False)  # informativa: no puntúa
     polaridad: Mapped[int] = mapped_column(Integer, default=0)        # +1 suma / -1 resta / 0
     peso: Mapped[float] = mapped_column(Float, default=1.0)           # |peso| en el WLC
-    map_kind: Mapped[str] = mapped_column(String, default="")         # ""|heatmap|zona
+    map_kind: Mapped[str] = mapped_column(String, default="")         # ""|calor|interconectado|area
     map_threshold: Mapped[float] = mapped_column(Float, default=0.0)  # umbral heatmap
     # ── Metadatos de InfoVariables(2) (Fase 1 del rediseño anidado) ──
     #    Alimentados por el actualizador de metadatos conciliando por `master_id`.
@@ -171,6 +171,9 @@ class CatalogVariable(Base):
     clase: Mapped[str] = mapped_column(String, default="informativa")
     # "Comentarios/ideas sobre la forma de visualización" (InfoVariables informativas).
     comentarios: Mapped[str] = mapped_column(String, default="")
+    # "Cómo se calcula" la variable (método/fórmula, texto libre). Editable en admin
+    # e ingestable por metadatos; el front lo prefiere sobre el texto template.
+    metodo_calculo: Mapped[str] = mapped_column(String, default="")
 
 
 class Norma(Base):
@@ -386,3 +389,16 @@ class ColumnMapping(Base):
     transform: Mapped[str] = mapped_column(String, default="")  # emplazamiento|bool_si_no|texto
     estado: Mapped[str] = mapped_column(String, default="ok")   # ok|pendiente|ignorada
     nota: Mapped[str] = mapped_column(String, default="")
+
+
+class AppConfig(Base):
+    """
+    Config editable clave→valor (JSONB). Store genérico para textos/parámetros
+    que el admin ajusta sin tocar código (p.ej. `report_calc_text` = el "Resumen
+    del cálculo" del informe). El valor es un blob JSON libre; cada consumidor
+    conoce su forma. Reutilizable para otros ajustes (intervalos, etc.).
+    """
+    __tablename__ = "app_config"
+
+    key: Mapped[str] = mapped_column(String, primary_key=True)
+    value: Mapped[dict] = mapped_column(JSONB, default=dict)
