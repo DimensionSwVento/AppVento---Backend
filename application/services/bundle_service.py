@@ -596,7 +596,6 @@ def _apply_impl(db: Session, root: str, emplazamiento: str = "onshore",
     # Import perezoso: pandas/h3 solo donde hay bundle real.
     import pandas as pd  # noqa: PLC0415
     import h3  # noqa: PLC0415
-    from functools import reduce
     from domain.query_engine.scoring import is_in_colombia
     from infrastructure.db import hexagon_repository as hexrepo
 
@@ -616,15 +615,17 @@ def _apply_impl(db: Session, root: str, emplazamiento: str = "onshore",
     def kind_of(name: str) -> str | None:
         return reg.get(name) or reg_bc.get(base_code(name))
 
-    # Merge por h3_index (outer). El merge se materializa una vez, pero la
-    # ITERACIÓN es perezosa (itertuples) → NO se construye una lista de dicts de
-    # todo el dataset (eso era el pico de varios GB que mataba al worker por OOM).
-    # El upsert consume este generador por lotes (`batch_size`), así la memoria se
-    # mantiene acotada al lote, no al dataset completo.
-    dfs = [pd.read_parquet(p) for p in paths]
-    merged = reduce(lambda a, b: a.merge(b, on="h3_index", how="outer"), dfs)
-    del dfs            # libera los parquets fuente antes de iterar/upsertear
-    _trim_memory()     # devuelve la memoria del merge al SO
+    # Merge por h3_index (outer), leyendo y uniendo de a UN parquet a la vez: NO se
+    # materializan todos los fuentes en RAM antes de unir (eso sumaba varios GB y
+    # disparaba el OOM). Solo viven `merged` + el parquet en curso. La ITERACIÓN es
+    # perezosa (itertuples) y el upsert consume por lotes → memoria acotada al lote.
+    merged = pd.read_parquet(paths[0])
+    for p in paths[1:]:
+        right = pd.read_parquet(p)
+        merged = merged.merge(right, on="h3_index", how="outer")
+        del right
+        _trim_memory()  # libera el parquet fuente ya unido
+    _trim_memory()      # devuelve la memoria del merge al SO
 
     columns = list(merged.columns)
     h3_pos = columns.index("h3_index")
