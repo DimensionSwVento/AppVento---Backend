@@ -136,6 +136,31 @@ def upsert_column(db: Session, name: str, body: dict) -> dict:
     return _to_dict(col)
 
 
+def rename_column(db: Session, old_name: str, new_name: str) -> dict | None:
+    """Renombra una columna del registro (la fuente cambió el nombre de columna).
+    Copia el mapeo (kind/target_ref/usos/…) al nuevo nombre y borra el viejo, para
+    que la app siga consumiéndola. `None` si el viejo no existe; lanza ValueError
+    si el destino ya existe (no se pisa silenciosamente)."""
+    old = db.get(ParquetColumn, old_name)
+    if old is None:
+        return None
+    new_name = new_name.strip()
+    if not new_name or new_name == old_name:
+        return _to_dict(old)
+    if db.get(ParquetColumn, new_name) is not None:
+        raise ValueError(f"Ya existe una columna '{new_name}'")
+    nuevo = ParquetColumn(
+        name=new_name, base_code=base_code(new_name), kind=old.kind,
+        target_ref=old.target_ref, usos=old.usos, tipo_dato=old.tipo_dato,
+        estado=old.estado, nota=old.nota,
+    )
+    db.add(nuevo)
+    db.delete(old)
+    db.commit()
+    db.refresh(nuevo)
+    return _to_dict(nuevo)
+
+
 # ── FASE C — APLICAR (ingesta real del bundle → hexagon) ──────────────────────
 
 # Archivos COMBINADOS canónicos que cubren todo (evita leer los per-criterio

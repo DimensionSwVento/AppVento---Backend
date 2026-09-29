@@ -3,9 +3,12 @@ from fastapi.responses import JSONResponse
 from typing import Optional
 from dataclasses import asdict
 
-from application.services import tile_service
+from sqlalchemy.orm import Session
+
+from application.services import tile_service, catalog_service
 from domain.query_engine.source import HexagonSource
 from api.deps import get_hexagon_source
+from infrastructure.db.session import get_db
 from infrastructure.auth.keycloak_guard import require_user
 
 router = APIRouter(prefix="/tiles", tags=["tiles"])
@@ -22,10 +25,16 @@ def warmup(source: HexagonSource = Depends(get_hexagon_source)):
 
 
 @router.get("/variables", dependencies=_auth)
-def get_variables(source: HexagonSource = Depends(get_hexagon_source)):
+def get_variables(
+    source: HexagonSource = Depends(get_hexagon_source),
+    db: Session = Depends(get_db),
+):
     if not tile_service.index_ready(source):
         return JSONResponse(content={"variables": []})
-    return JSONResponse(content=tile_service.get_variables(source))
+    # Etiquetas REALES desde `catalog_variable` (BD, ingerido de InfoVariables);
+    # el tile ya no depende del stub hardcodeado para nombrar/dimensionar.
+    labels = catalog_service.tile_labels(db)
+    return JSONResponse(content=tile_service.get_variables(source, labels))
 
 
 @router.get("/counts", dependencies=_auth)

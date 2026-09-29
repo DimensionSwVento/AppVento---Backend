@@ -86,7 +86,14 @@ _INFOVARIABLES_PROFILE: list[tuple[tuple[str, ...], str, str]] = [
     (("emplazamiento",), "emplazamiento", "emplazamiento"),
     (("se muestra en el mapa", "mapa"), "en_mapa", "bool_si_no"),
     (("menu",), "tipo", "menu_tipo"),
-    (("id",), "master_id", "texto"),
+    # OJO ORDEN: estas van ANTES de "id" porque el match es substring y `"id"`
+    # está contenido en "un-id-ad" → sin esto, el header "Unidad" mapearía a
+    # master_id. Palabras específicas primero, keyword corta ("id") al final.
+    (("como se calcula", "metodo", "formula"), "metodo_calculo", "texto"),  # "cómo se calcula"
+    (("unidad",), "unidad", "texto"),
+    (("rango",), "rango", "texto"),
+    (("polaridad",), "polaridad", "texto"),  # se parsea a int en apply()
+    (("peso",), "peso", "texto"),            # se parsea a float en apply()
     (("descripcion",), "descripcion", "texto"),
     (("url",), "url_fuente", "texto"),
     (("tipo de licencia", "licencia"), "licencia", "texto"),
@@ -95,6 +102,7 @@ _INFOVARIABLES_PROFILE: list[tuple[tuple[str, ...], str, str]] = [
     (("condicion", "activacion"), "condicion", "texto"),  # regulatoria: condición de activación
     (("comentarios", "ideas"), "comentarios", "texto"),   # informativas: nota de visualización
     (("norma", "disposicion"), "label", "texto"),   # regulatoria: nombre de la norma
+    (("id",), "master_id", "texto"),   # DEBE ir tras "unidad" (substring, ver arriba)
     (("variable",), "label", "texto"),
 ]
 
@@ -412,10 +420,25 @@ def apply(db: Session, path: str, perfil: str = "infovariables",
             var.subcriterio_id = sub_id
         for dest, attr in (("descripcion", "descripcion"), ("fuente", "fuente"),
                            ("licencia", "licencia"), ("url_fuente", "url_fuente"),
-                           ("comentarios", "comentarios")):
+                           ("comentarios", "comentarios"),
+                           ("metodo_calculo", "metodo_calculo"),
+                           ("unidad", "unidad"), ("rango", "rango")):
             v = val(row, dest)
             if v:
                 setattr(var, attr, v)
+        # Numéricos del modelo (editables también por metadatos, no solo en admin).
+        peso_raw = val(row, "peso")
+        if peso_raw:
+            try:
+                var.peso = float(str(peso_raw).replace(",", "."))
+            except ValueError:
+                pass
+        pol_raw = val(row, "polaridad")
+        if pol_raw:
+            try:
+                var.polaridad = int(float(str(pol_raw).replace(",", ".")))
+            except ValueError:
+                pass
         if "emplazamiento" in dest_header:
             var.emplazamiento = _to_emplazamiento(val(row, "emplazamiento"))
         if "en_mapa" in dest_header:

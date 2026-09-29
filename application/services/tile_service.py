@@ -17,7 +17,9 @@ from shared.config import PARQUET_PATH, HEXAGON_INGEST, OFFSHORE_VAR
 from infrastructure.data.variable_catalog import dimension_of, get_variable_label, base_code
 from infrastructure.data import model_weights
 from domain.query_engine import geo, aggregator, variable_engine
-from domain.query_engine.scoring import zoom_to_h3_res
+from domain.query_engine.scoring import (
+    zoom_to_h3_res, normalize_model_score, is_excluded_by_score,
+)
 from domain.query_engine.source import HexagonSource
 from domain.models.hexagon import TileHex, HexDetail, AreaHex
 
@@ -35,6 +37,17 @@ def extract_categories(variable_names: list[str]) -> list[str]:
         v.split("_")[0] for v in variable_names
         if "_" in v and len(v.split("_")[0]) <= 3
     })
+
+
+# La dimensión SOCIAL del modelo = entorno_social (SOC) + economía-SOE (§2 del
+# modelo anidado): sus ponderadas puntúan JUNTAS → se canoniza el prefijo SOE a
+# SOC para promediarlas en un único score Social (antes salían separadas y el
+# front tomaba solo una → Social incompleta). ECO (macro) y REG son informativas.
+_CAT_CANON: dict[str, str] = {"SOE": "SOC"}
+
+
+def _canon_cat(prefix: str) -> str:
+    return _CAT_CANON.get(prefix, prefix)
 
 
 # ── Estado / metadatos ────────────────────────────────────────────────────────
@@ -57,20 +70,24 @@ def warmup(source: HexagonSource) -> dict:
     }
 
 
-def get_variables(source: HexagonSource) -> dict:
+def get_variables(source: HexagonSource, labels: Optional[dict] = None) -> dict:
+    """`labels` = mapa base_code→{label,dimension,dimensionLabel} de `catalog_variable`
+    (BD). Si una variable está ahí, se etiqueta con el dato REAL ingerido; si no
+    (o sin ingesta), cae al nombre derivado del código (stub). Nunca inventa."""
+    labels = labels or {}
     names  = source.variable_names()
     ranges = source.variable_ranges()
-    return {
-        "variables": [
-            {
-                "name":      v,
-                "label":     get_variable_label(v),
-                "dimension": dimension_of(v),
-                "range":     ranges.get(v),
-            }
-            for v in names
-        ]
-    }
+    out = []
+    for v in names:
+        info = labels.get(base_code(v))
+        out.append({
+            "name":           v,
+            "label":          info["label"] if info else get_variable_label(v),
+            "dimension":      info["dimension"] if info else dimension_of(v),
+            "dimensionLabel": info["dimensionLabel"] if info else None,
+            "range":          ranges.get(v),
+        })
+    return {"variables": out}
 
 
 def get_counts(source: HexagonSource, zoom: int, selected: list[str],
@@ -84,9 +101,14 @@ def get_detail(source: HexagonSource, h3_index: str) -> Optional[HexDetail]:
     hx = source.fetch_one(h3_index)
     if hx is None:
         return None
+    # score_general de la master viene 1–5 (−1 = excluida) → normaliza a [0,1]
+    # con (raw−1)/4 para que el popup lo muestre en % correcto (front hace ×100).
+    norm = normalize_model_score(hx.score_general)
+    # score_general == −1 → zona excluida (aunque la master no traiga tipo_celda).
+    tipo = "excluida" if is_excluded_by_score(hx.score_general) else hx.tipo_celda
     return HexDetail(
-        h3_index=hx.h3_index, score_general=hx.score_general, tipo_celda=hx.tipo_celda,
-        lat=hx.lat, lng=hx.lng, variables=hx.variables,
+        h3_index=hx.h3_index, score_general=norm if norm is not None else 0.0,
+        tipo_celda=tipo, lat=hx.lat, lng=hx.lng, variables=hx.variables,
     )
 
 
@@ -110,7 +132,9 @@ def get_tile(source: HexagonSource, z: int, x: int, y: int,
             value, _ = variable_engine.resolve_value(hx, var, available, var_range, "raw")
         # Mar/tierra por hex si la master trae la columna configurada (nombre TBD).
         off = _offshore_flag(hx.variables) if OFFSHORE_VAR else None
-        out.append(TileHex(h=hx.h3_index, s=hx.score_general, t=hx.tipo_celda,
+        # score_general == −1 → zona excluida (no seleccionable en la cuadrícula).
+        tipo = "excluida" if is_excluded_by_score(hx.score_general) else hx.tipo_celda
+        out.append(TileHex(h=hx.h3_index, s=hx.score_general, t=tipo,
                            la=hx.lat, ln=hx.lng, v=value, off=off))
     return out
 
@@ -226,45 +250,73 @@ def get_area_report(source: HexagonSource, polygon: Optional[list] = None,
     pon        = pon_fn(cells) if callable(pon_fn) else {}
     available  = source.variable_names()
     ranges     = source.variable_ranges()
-    categories = extract_categories(available)
-    vars_by_cat = {c: [v for v in available if v.startswith(c + "_")] for c in categories}
+    # Agrupa por dimensión canónica (SOE se funde en Social junto con SOC).
+    vars_by_cat: dict[str, list[str]] = {}
+    for v in available:
+        if "_" in v and len(v.split("_")[0]) <= 3:
+            vars_by_cat.setdefault(_canon_cat(v.split("_")[0]), []).append(v)
 
     out: list[AreaHex] = []
     for hx in rows:
         scores: dict[str, float] = {}
-        gen_num = 0.0  # Σ(peso_dim · score_dim)
+        gen_num = 0.0  # Σ(peso_dim · score_dim) — solo para el fallback template
         gen_den = 0.0  # Σ peso_dim
-        for cat, cat_vars in vars_by_cat.items():
-            # score_dim = Σ(peso_var · valor_norm) / Σ peso_var  (WLC/AHP).
-            num = 0.0
-            den = 0.0
-            for var in cat_vars:
-                raw = variable_engine.get_variable_value(hx, var)
-                rng = ranges.get(var)
-                if raw is not None and rng:
-                    norm = variable_engine.normalize(raw, rng["min"], rng["max"])
-                    w = model_weights.variable_weight(var)
-                    num += w * norm
-                    den += w
-            if den > 0:
-                score_cat = round(num / den, 4)
-                scores[cat] = score_cat
-                wd = model_weights.dimension_weight(cat)
-                gen_num += wd * score_cat
-                gen_den += wd
+        # score por DIMENSIÓN = promedio de las PONDERADAS (variables_pon) que caen
+        # en esa dimensión. Las ponderadas YA vienen en 1–5 (peso ya aplicado por el
+        # modelo), así que promediarlas da el 1–5 de la dimensión → se normaliza
+        # (raw−1)/4 igual que el global. Es dato REAL de la master, sin pesos
+        # template. Se agrupa por prefijo de categoría del código (TEC/AMB/SOC/SOE…).
+        pon_vars = pon.get(hx.h3_index, {})
+        pon_by_cat: dict[str, list[float]] = {}
+        for var, pval in pon_vars.items():
+            if pval is None or isinstance(pval, bool) or not isinstance(pval, (int, float)):
+                continue
+            cat = _canon_cat(var.split("_")[0])
+            if 0 < len(cat) <= 3:
+                pon_by_cat.setdefault(cat, []).append(float(pval))
 
-        # índice general = Σ(peso_dim · score_dim) / Σ peso_dim. Si la master ya
-        # trae un score_general (> 0), se respeta; si no, se usa el calculado.
+        if pon_by_cat:
+            # BACKEND real: promedio de ponderadas (1–5) por dimensión → [0,1].
+            for cat, vals in pon_by_cat.items():
+                norm_cat = normalize_model_score(sum(vals) / len(vals))
+                if norm_cat is not None:
+                    score_cat = round(norm_cat, 4)
+                    scores[cat] = score_cat
+        else:
+            # TEMPLATE/stub (sin variables_pon): recompute WLC desde variables.
+            for cat, cat_vars in vars_by_cat.items():
+                num = 0.0
+                den = 0.0
+                for var in cat_vars:
+                    raw = variable_engine.get_variable_value(hx, var)
+                    rng = ranges.get(var)
+                    if raw is not None and rng:
+                        norm = variable_engine.normalize(raw, rng["min"], rng["max"])
+                        w = model_weights.variable_weight(var)
+                        num += w * norm
+                        den += w
+                if den > 0:
+                    score_cat = round(num / den, 4)
+                    scores[cat] = score_cat
+                    wd = model_weights.dimension_weight(cat)
+                    gen_num += wd * score_cat
+                    gen_den += wd
+
+        # índice general = Σ(peso_dim · score_dim) / Σ peso_dim. El `global` de la
+        # master viene en escala 1–5 (5 = más viable, −1 = excluida) → se NORMALIZA
+        # a [0,1] aquí con (raw−1)/4. Los scores por dimensión de arriba ya salen en
+        # [0,1] (se computan de variables normalizadas). Si no hay global válido
+        # (None/−1), se cae al calculado.
         computed_general = round(gen_num / gen_den, 4) if gen_den > 0 else 0.0
-        score_general = (
-            hx.score_general if hx.score_general and hx.score_general > 0
-            else computed_general
-        )
+        norm_general = normalize_model_score(hx.score_general)
+        score_general = round(norm_general, 4) if norm_general is not None else computed_general
 
+        # score_general == −1 → zona excluida (aunque falte tipo_celda en la master).
+        tipo = "excluida" if is_excluded_by_score(hx.score_general) else hx.tipo_celda
         out.append(AreaHex(
             h3_index=hx.h3_index, lat=hx.lat, lng=hx.lng,
             score_general=score_general, scores=scores,
-            tipo_celda=hx.tipo_celda, variables=hx.variables,
+            tipo_celda=tipo, variables=hx.variables,
             variables_pon=pon.get(hx.h3_index, {}),
         ))
     return out

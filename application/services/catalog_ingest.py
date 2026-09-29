@@ -11,7 +11,6 @@ que la master). Las re-ingestas de catálogo son DESTRUCTIVAS por tabla (reempla
 el contenido con el del archivo), igual que la master.
 """
 from __future__ import annotations
-import json
 import logging
 from datetime import datetime, timezone
 
@@ -20,7 +19,7 @@ from sqlalchemy.orm import Session
 
 from infrastructure.db import catalog_seed as seed
 from infrastructure.db.models import (
-    CatalogVariable, DataSource, Escenario, Hexagon, Norma, Turbine,
+    DataSource, Escenario, Hexagon,
 )
 from application.services import tile_service
 from shared import config
@@ -44,23 +43,6 @@ def _apply(db: Session, model, kwargs_rows: list[dict], destructive: bool) -> in
     return len(kwargs_rows)
 
 
-def _ingest_variables(db: Session, destructive: bool) -> int:
-    if not seed._VARIABLES_SEED.exists():
-        raise FileNotFoundError(seed._VARIABLES_SEED.name)
-    entries = json.loads(seed._VARIABLES_SEED.read_text(encoding="utf-8"))
-    return _apply(db, CatalogVariable, entries, destructive)
-
-
-def _ingest_normas(db: Session, destructive: bool) -> int:
-    rows = seed._read_csv(seed._NORMAS_CSV)
-    kwargs = [
-        dict(id=r["id"], nombre=r["nombre"], descripcion=r["descripcion"],
-             estado=r["estado"])
-        for r in rows
-    ]
-    return _apply(db, Norma, kwargs, destructive)
-
-
 def _ingest_escenarios(db: Session, destructive: bool) -> int:
     rows = seed._read_csv(seed._ESCENARIOS_CSV)
     kwargs = [
@@ -70,19 +52,6 @@ def _ingest_escenarios(db: Session, destructive: bool) -> int:
         for r in rows
     ]
     return _apply(db, Escenario, kwargs, destructive)
-
-
-def _ingest_turbines(db: Session, destructive: bool) -> int:
-    rows = seed._read_csv(seed._TURBINES_CSV)
-    kwargs = [
-        dict(id=r["id"], label=r["label"], detail=r["detail"],
-             potencia_min_mw=float(r["potencia_min_mw"]),
-             potencia_max_mw=float(r["potencia_max_mw"]),
-             area_por_aero_km2=float(r["area_por_aero_km2"]),
-             espaciamiento_m=int(r["espaciamiento_m"]))
-        for r in rows
-    ]
-    return _apply(db, Turbine, kwargs, destructive)
 
 
 def _ingest_master(db: Session, destructive: bool) -> int:
@@ -100,36 +69,16 @@ _DOCS: dict[str, dict] = {
         "ingest": _ingest_master,
         "count": lambda db: db.scalar(select(func.count()).select_from(Hexagon)) or 0,
     },
-    "variables": {
-        # Origen real: CSVs del cliente InfoVariables 1/2/3. Hoy `variables_seed.json`
-        # es un proxy generado del front (`tools/gen_variables_seed.py`) hasta que se
-        # dropen los CSV reales y se escriba su parser.
-        "label": "Catálogo de variables (InfoVariables 1/2/3)",
-        "kind": "json",
-        "location": str(seed._VARIABLES_SEED),
-        "ingest": _ingest_variables,
-        "count": lambda db: db.scalar(select(func.count()).select_from(CatalogVariable)) or 0,
-    },
-    "normas": {
-        "label": "Normas regulatorias",
-        "kind": "csv",
-        "location": str(seed._NORMAS_CSV),
-        "ingest": _ingest_normas,
-        "count": lambda db: db.scalar(select(func.count()).select_from(Norma)) or 0,
-    },
+    # VARIABLES, NORMAS y TURBINES no se reingieren desde un seed: su fuente de
+    # verdad es la ingesta del cliente (`metadata_ingest`: variables por
+    # `master_id`, regulatoria REG… → `catalog_norma`; turbinas desde
+    # InfoVariables(2)a). Sin ingesta = vacío (real o nada).
     "escenarios": {
         "label": "Escenarios económicos",
         "kind": "csv",
         "location": str(seed._ESCENARIOS_CSV),
         "ingest": _ingest_escenarios,
         "count": lambda db: db.scalar(select(func.count()).select_from(Escenario)) or 0,
-    },
-    "turbines": {
-        "label": "Aerogeneradores (S/M/L)",
-        "kind": "csv",
-        "location": str(seed._TURBINES_CSV),
-        "ingest": _ingest_turbines,
-        "count": lambda db: db.scalar(select(func.count()).select_from(Turbine)) or 0,
     },
 }
 

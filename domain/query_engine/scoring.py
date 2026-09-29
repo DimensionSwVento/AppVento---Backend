@@ -9,8 +9,9 @@ from __future__ import annotations
 from typing import Optional
 
 
-# ── Score temporal (PLACEHOLDER) ──────────────────────────────────────────────
-# Se reemplazará por el modelo AHP real del equipo de análisis.
+# ── Score efectivo de respaldo (fallback) ─────────────────────────────────────
+# Heurística usada solo cuando el parquet no trae `score`; el cálculo
+# autoritativo es el WLC ponderado. Pesos aproximados, no validados.
 
 def _get_numeric(variables: dict, prefix: str) -> Optional[float]:
     for k, v in variables.items():
@@ -42,6 +43,34 @@ def calc_temp_viability(variables: dict) -> float:
 def effective_score(score_general: float, variables: dict) -> float:
     """Score persistido: el del parquet si es > 0, o el placeholder calculado."""
     return score_general if score_general and score_general > 0 else calc_temp_viability(variables)
+
+
+# ── Normalización de scores del modelo (escala 1–5) ───────────────────────────
+# TODO el modelo (variables, subcriterios, dimensiones y `global`) va en escala
+# 1–5, con 5 = lo más viable y -1 = zona EXCLUIDA (no viable, p.ej. protegidas).
+# El contrato /api/tiles/area entrega TODO en [0,1], por eso se normaliza en el
+# punto de LECTURA (get_area_report), no en la ingesta (evita re-ingerir).
+# Mapeo lineal: 1 → 0, 5 → 1  ⇒  (raw - 1) / 4.
+MODEL_SCORE_MIN = 1.0
+MODEL_SCORE_MAX = 5.0
+
+
+def normalize_model_score(raw: Optional[float]) -> Optional[float]:
+    """Score del modelo (1–5) → [0,1]. `raw < 0` (p.ej. -1 = zona excluida) o
+    `None` → devuelve None para que el llamador use el score calculado.
+    Nota: 1→0 y 5→1 (NO raw/5), coherente con la escala 1–5 del modelo."""
+    if raw is None or raw < 0:
+        return None
+    span = MODEL_SCORE_MAX - MODEL_SCORE_MIN
+    return max(0.0, min(1.0, (raw - MODEL_SCORE_MIN) / span))
+
+
+def is_excluded_by_score(raw: Optional[float]) -> bool:
+    """True si el `global` de la master marca el hex como zona EXCLUIDA (−1).
+    Señal autoritativa del modelo: el llamador fija `tipo_celda='excluida'` para
+    que el hex quede NO seleccionable (capa de excluidos). Se captura ANTES de
+    normalizar (normalize_model_score descarta el −1 como None)."""
+    return raw is not None and raw < 0
 
 
 # ── Zoom → resolución H3 ──────────────────────────────────────────────────────
