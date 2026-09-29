@@ -104,8 +104,12 @@ def get_variable_layer(
     bbox = payload.get("bbox")
     threshold = float(payload.get("threshold") or 0.0)
     subtemplate = bool(payload.get("subtemplate") or False)
+    # `res` (resolución del zoom): agrega al hexágono padre → respuesta pequeña y
+    # memoria acotada (evita OOM con bbox grande). Sin `res` = res8 por celda.
+    res_raw = payload.get("res")
+    res = int(res_raw) if res_raw is not None else None
     return JSONResponse(
-        content=tile_service.get_variable_layer(source, code, bbox, threshold, subtemplate),
+        content=tile_service.get_variable_layer(source, code, bbox, threshold, subtemplate, res),
         headers={"Cache-Control": "public, max-age=3600"},
     )
 

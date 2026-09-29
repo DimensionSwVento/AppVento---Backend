@@ -7,6 +7,7 @@ mañana podría ser otra sin tocar el dominio.
 """
 from __future__ import annotations
 from dataclasses import dataclass, field
+from collections.abc import Iterable
 from typing import Optional, Protocol, runtime_checkable
 
 Value = str | float | None
@@ -37,6 +38,11 @@ class HexagonSource(Protocol):
 
     def fetch_bbox(self, west: float, south: float, east: float, north: float) -> list[HexRow]:
         """Hexágonos dentro del bounding box (tiles)."""
+        ...
+
+    def stream_bbox(self, west: float, south: float, east: float, north: float) -> Iterable[HexRow]:
+        """Como `fetch_bbox` pero en STREAMING (no materializa el bbox en RAM) —
+        para agregar la capa de una variable sobre zonas grandes sin OOM."""
         ...
 
     def variable_names(self) -> list[str]:
