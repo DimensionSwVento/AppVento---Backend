@@ -56,6 +56,13 @@ def get_detail(h3_index: str, source: HexagonSource = Depends(get_hexagon_source
     return JSONResponse(content=asdict(detail))
 
 
+@router.get("/excluded", dependencies=_auth)
+def excluded_cells(source: HexagonSource = Depends(get_hexagon_source)):
+    """Capa COMPLETA de excluidos en una sola petición → el front la cachea y deja
+    de pedir `get_tile` por cada tile solo para marcar zonas no seleccionables."""
+    return JSONResponse(content={"cells": tile_service.excluded_cells(source)})
+
+
 @router.get("/{z}/{x}/{y}", dependencies=_auth)
 def get_tile(
     z: int, x: int, y: int,

@@ -144,6 +144,13 @@ def get_tile(source: HexagonSource, z: int, x: int, y: int,
     return out
 
 
+def excluded_cells(source: HexagonSource) -> list[str]:
+    """Todos los h3 excluidos (capa completa) en UNA sola consulta → el front los
+    cachea y deja de pedir `get_tile` por cada tile solo para marcar excluidos."""
+    fn = getattr(source, "excluded_cells", None)
+    return fn() if callable(fn) else []
+
+
 def _offshore_flag(variables: dict) -> Optional[int]:
     """1/0 mar/tierra desde la columna `OFFSHORE_VAR` de la master (o None)."""
     raw = variables.get(OFFSHORE_VAR)
