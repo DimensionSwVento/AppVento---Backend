@@ -174,6 +174,9 @@ def get_area_heatmap(source: HexagonSource, polygon: Optional[list], var: str,
 # manda uno — devuelve la variable para todo el país (puede ser pesado; el front
 # debería mandar el bbox del viewport para acotar).
 _COLOMBIA_BBOX = {"west": -82.5, "south": -4.5, "east": -66.0, "north": 13.6}
+# Resolución de agregación por defecto para una consulta a nivel PAÍS sin `res`
+# (defensa anti-OOM): res 6 ≈ decenas de miles de hexágonos, no millones.
+_COUNTRY_AGG_RES = 6
 
 
 def _resolve_code(available: list[str], code: str, subtemplate: bool) -> tuple[Optional[str], bool]:
@@ -217,6 +220,11 @@ def get_variable_layer(source: HexagonSource, code: str,
     azar (determinista) — modo puente hasta conocer el mapeo real de códigos.
     """
     b = bbox or _COLOMBIA_BBOX
+    # DEFENSA anti-OOM: una consulta a nivel PAÍS sin `res` (p.ej. un front aún no
+    # actualizado) agregaría millones de filas en `out` → forzamos una resolución
+    # gruesa para que la respuesta y la memoria queden acotadas siempre.
+    if res is None and bbox is None:
+        res = _COUNTRY_AGG_RES
     available = source.variable_names()
     eff_code, is_sub = _resolve_code(available, code, subtemplate)
     if eff_code is None:

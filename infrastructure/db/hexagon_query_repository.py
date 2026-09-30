@@ -87,7 +87,9 @@ class PostgresHexagonSource:
                 Hexagon.lat >= south, Hexagon.lat <= north,
                 Hexagon.lng >= west,  Hexagon.lng <= east,
             )
-            .execution_options(stream_results=True, yield_per=20_000)
+            # lote pequeño: cada HexRow trae el JSONB `variables` completo; en un
+            # server chico (~2 GB) un yield_per grande hincha el pico por request.
+            .execution_options(stream_results=True, yield_per=5_000)
         )
         for r in self.db.execute(stmt):
             yield _to_row(r)
