@@ -11,10 +11,13 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import threading
+import time
+import uuid
 from contextlib import asynccontextmanager
 
 from anyio import to_thread
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.concurrency import run_in_threadpool
 from fastapi.middleware.cors import CORSMiddleware
 
@@ -30,6 +33,20 @@ _MASTER_TICK_SECONDS = 60
 
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger("vento")
+
+# ── Traza de peticiones (observabilidad anti-saturación) ──────────────────────
+# Cuando el server se "cuelga vivo" (workers activos pero sin responder), esto
+# muestra en consola QUÉ peticiones tienen tomados los hilos y cuáles se apilan.
+#   TRACE_REQUESTS=1  → loguea CADA request (→ entra / ← sale con duración).
+#   INFLIGHT_WARN=N   → si hay ≥N en vuelo a la vez, WARNING (detecta apilamiento).
+#   SLOW_REQUEST_MS=N → loguea las que tarden más de N ms aunque TRACE esté off.
+# El endpoint GET /api/_debug/inflight (si DEBUG_INFLIGHT=1) lista las que están
+# procesándose AHORA (curl en pleno "ataque" → ves qué está atascado).
+_TRACE_REQUESTS = os.getenv("TRACE_REQUESTS", "0") == "1"
+_INFLIGHT_WARN = int(os.getenv("INFLIGHT_WARN", "12"))
+_SLOW_REQUEST_MS = float(os.getenv("SLOW_REQUEST_MS", "3000"))
+_inflight: dict[str, tuple[str, str, float]] = {}  # rid → (método, path, t0)
+_inflight_lock = threading.Lock()
 
 
 def _startup_check() -> None:
@@ -122,6 +139,53 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+@app.middleware("http")
+async def _trace_requests(request: Request, call_next):
+    """Traza peticiones para diagnosticar saturación: cuenta las EN VUELO, avisa
+    cuando se apilan y loguea las lentas. Ver flags TRACE_REQUESTS/INFLIGHT_WARN/
+    SLOW_REQUEST_MS arriba."""
+    rid = uuid.uuid4().hex[:8]
+    method, path = request.method, request.url.path
+    t0 = time.monotonic()
+    with _inflight_lock:
+        _inflight[rid] = (method, path, t0)
+        n = len(_inflight)
+    if _TRACE_REQUESTS:
+        log.info("→ [%s] %s %s (en-vuelo=%d)", rid, method, path, n)
+    elif n >= _INFLIGHT_WARN:
+        # Apilamiento: los hilos se están llenando → probable cuelgue inminente.
+        log.warning("PETICIONES EN VUELO ALTAS=%d (última %s %s)", n, method, path)
+    status = 500
+    try:
+        resp = await call_next(request)
+        status = resp.status_code
+        return resp
+    finally:
+        with _inflight_lock:
+            _inflight.pop(rid, None)
+            n2 = len(_inflight)
+        dur_ms = (time.monotonic() - t0) * 1000.0
+        if _TRACE_REQUESTS or dur_ms > _SLOW_REQUEST_MS:
+            log.info("← [%s] %s %s %s %.0fms (en-vuelo=%d)", rid, method, path, status, dur_ms, n2)
+
+
+@app.get("/api/_debug/inflight", include_in_schema=False)
+def debug_inflight():
+    """Peticiones que se están PROCESANDO ahora mismo (curl en pleno cuelgue → ves
+    qué endpoint tiene tomados los hilos). Gate: DEBUG_INFLIGHT=1 (si no, 404)."""
+    if os.getenv("DEBUG_INFLIGHT", "0") != "1":
+        raise HTTPException(status_code=404, detail="disabled")
+    now = time.monotonic()
+    with _inflight_lock:
+        items = [
+            {"id": rid, "method": m, "path": p, "age_ms": round((now - t0) * 1000)}
+            for rid, (m, p, t0) in _inflight.items()
+        ]
+    items.sort(key=lambda x: -x["age_ms"])
+    return {"count": len(items), "requests": items}
+
 
 # Todos los endpoints cuelgan de /api (coincide con el rewrite del frontend).
 app.include_router(tiles.router, prefix="/api")
