@@ -52,6 +52,22 @@ class PostgresHexagonSource:
         stmt = select(*_COLS).where(Hexagon.h3_index.in_(cells))
         return [_to_row(r) for r in self.db.execute(stmt)]
 
+    def stream_cells(self, cells: list[str]):
+        """Como `fetch_cells` pero STREAMING (cursor de servidor + `yield_per`): NO
+        materializa todas las celdas del área en RAM. Para el informe sobre áreas
+        grandes — cada `HexRow` trae el JSONB `variables` completo, así que una
+        selección amplia hincharía el pico por request (misma causa que el OOM del
+        bbox). Cada lote se procesa y se libera; el llamador solo retiene su salida."""
+        if not cells:
+            return
+        stmt = (
+            select(*_COLS)
+            .where(Hexagon.h3_index.in_(cells))
+            .execution_options(stream_results=True, yield_per=5_000)
+        )
+        for r in self.db.execute(stmt):
+            yield _to_row(r)
+
     def fetch_one(self, h3_index: str) -> Optional[HexRow]:
         stmt = select(*_COLS).where(Hexagon.h3_index == h3_index)
         r = self.db.execute(stmt).first()

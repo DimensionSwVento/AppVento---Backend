@@ -119,7 +119,10 @@ def get_detail(source: HexagonSource, h3_index: str) -> Optional[HexDetail]:
 def get_tile(source: HexagonSource, z: int, x: int, y: int,
              var: Optional[str] = None) -> list[TileHex]:
     west, south, east, north = geo.tile_to_bbox(z, x, y)
-    rows = source.fetch_bbox(west, south, east, north)          # base (res 8) en el bbox
+    # STREAMING (no materializa el bbox): a zoom bajo un tile abarca millones de
+    # hexágonos res 8 → `fetch_bbox` los cargaba todos en RAM y disparaba el OOM
+    # del mapa. `aggregate` consume el generador y solo retiene los padres del zoom.
+    rows = source.stream_bbox(west, south, east, north)         # base (res 8) en el bbox
 
     target_res = zoom_to_h3_res(z)
     hexes = aggregator.aggregate(rows, target_res)              # agrupa a la res del zoom
@@ -160,7 +163,9 @@ def get_area_heatmap(source: HexagonSource, polygon: Optional[list], var: str,
     cells = _resolve_cells(polygon, hexes, resolution)
     if not cells:
         return []
-    rows      = source.fetch_cells(cells)
+    # STREAMING del área (cae a `fetch_cells` si la fuente no lo expone).
+    stream_fn = getattr(source, "stream_cells", None)
+    rows      = stream_fn(cells) if callable(stream_fn) else source.fetch_cells(cells)
     available = source.variable_names()
     var_range = source.variable_range(var)
     out = []
@@ -274,7 +279,11 @@ def get_area_report(source: HexagonSource, polygon: Optional[list] = None,
     if not cells:
         return []
 
-    rows       = source.fetch_cells(cells)
+    # STREAMING del área: cada hex trae su JSONB completo; una selección amplia
+    # cargaba todo a la vez. Cae a `fetch_cells` si la fuente no expone streaming
+    # (p.ej. stub en memoria) — sin romper.
+    stream_fn  = getattr(source, "stream_cells", None)
+    rows       = stream_fn(cells) if callable(stream_fn) else source.fetch_cells(cells)
     # Ponderadas por hex (tabla aparte) para el "descargar crudos". Opcional: si la
     # fuente no la expone (p.ej. stub en memoria), queda vacío sin romper.
     pon_fn     = getattr(source, "fetch_variables_pon", None)
