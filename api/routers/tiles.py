@@ -121,6 +121,28 @@ def get_variable_layer(
     )
 
 
+@router.post("/variables-bulk", dependencies=_auth)
+def get_variable_layers(
+    payload: dict = Body(...),
+    source: HexagonSource = Depends(get_hexagon_source),
+):
+    """BULK de varias capas en UNA pasada del bbox (evita N scans que apilan hilos).
+    Body: `{ codes: [...], bbox?, threshold?, res?, subtemplate? }`
+    → `{ code: [{h3_index, value}] }`."""
+    codes = payload.get("codes") or []
+    if not isinstance(codes, list) or not codes:
+        raise HTTPException(status_code=400, detail="Falta 'codes' (lista no vacía)")
+    bbox = payload.get("bbox")
+    threshold = float(payload.get("threshold") or 0.0)
+    subtemplate = bool(payload.get("subtemplate") or False)
+    res_raw = payload.get("res")
+    res = int(res_raw) if res_raw is not None else None
+    return JSONResponse(
+        content=tile_service.get_variable_layers(source, codes, bbox, threshold, subtemplate, res),
+        headers={"Cache-Control": "public, max-age=3600"},
+    )
+
+
 @router.post("/area", dependencies=_auth)
 def get_area(
     payload: dict = Body(...),
