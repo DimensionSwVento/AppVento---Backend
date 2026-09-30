@@ -35,6 +35,12 @@ class FakeHexagonSource:
             if south <= r.lat <= north and west <= r.lng <= east
         ]
 
+    def stream_bbox(self, west: float, south: float, east: float, north: float):
+        yield from self.fetch_bbox(west, south, east, north)
+
+    def stream_cells(self, cells: list[str]):
+        yield from self.fetch_cells(cells)
+
     # ── metadatos ─────────────────────────────────────────────────────────
     def variable_names(self) -> list[str]:
         return sorted(self._ranges.keys())

@@ -32,6 +32,11 @@ class HexagonSource(Protocol):
         """Hexágonos cuyo h3_index esté en `cells` (área/selección)."""
         ...
 
+    def stream_cells(self, cells: list[str]) -> Iterable[HexRow]:
+        """Como `fetch_cells` pero en STREAMING (no materializa el área en RAM) —
+        para el informe sobre áreas grandes sin OOM."""
+        ...
+
     def fetch_one(self, h3_index: str) -> Optional[HexRow]:
         """Un hexágono por su índice (detalle)."""
         ...

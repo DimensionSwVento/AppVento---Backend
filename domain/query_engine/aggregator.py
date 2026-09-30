@@ -1,32 +1,42 @@
 """
 Aggregator.
-Recibe lista de _IndexedHex y una resolución target.
+Recibe hexágonos (lista O generador en streaming) y una resolución target.
 Si target_res < resolución del índice (8), agrupa por cell_to_parent y promedia.
 Si target_res == 8, pasa directo sin costo.
 """
 from __future__ import annotations
+from collections.abc import Iterable, Iterator
+from itertools import chain
 from typing import Optional
 import h3
 
 from domain.query_engine.source import HexRow
 
 
-def aggregate(hexes: "list[HexRow]", target_res: int) -> "list[HexRow]":
+def aggregate(hexes: "Iterable[HexRow]", target_res: int) -> "list[HexRow]":
     """
     Agrupa hexágonos al target_res pedido.
     Si target_res es igual a la resolución de los hexágonos de entrada, devuelve tal cual.
+
+    Acepta un GENERADOR (streaming): consume la entrada una sola vez y solo retiene
+    el dict de padres agregados (acotado por el target_res, no por el total de filas)
+    → agregar un bbox grande no materializa millones de `HexRow` en RAM (anti-OOM).
     """
-    if not hexes:
+    it: Iterator[HexRow] = iter(hexes)
+    try:
+        first = next(it)
+    except StopIteration:
         return []
 
-    current_res = h3.get_resolution(hexes[0].h3_index)
+    current_res = h3.get_resolution(first.h3_index)
 
     if current_res == target_res:
-        return hexes
+        # Sin agregación: devuelve tal cual (materializa lo que reste del iterador).
+        return [first, *it]
 
     groups: dict[str, dict] = {}
 
-    for hx in hexes:
+    for hx in chain([first], it):
         try:
             parent = h3.cell_to_parent(hx.h3_index, target_res)
         except Exception:
