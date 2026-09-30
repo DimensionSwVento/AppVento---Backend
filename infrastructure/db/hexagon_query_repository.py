@@ -11,7 +11,7 @@ Se instancia por request con la sesión de FastAPI (`Depends(get_db)`).
 from __future__ import annotations
 from typing import Optional
 
-from sqlalchemy import func, select, text
+from sqlalchemy import func, or_, select, text
 from sqlalchemy.orm import Session
 
 from domain.query_engine.source import HexRow
@@ -109,6 +109,17 @@ class PostgresHexagonSource:
         )
         for r in self.db.execute(stmt):
             yield _to_row(r)
+
+    # ── Excluidos (capa completa, una sola petición) ─────────────────────────
+    def excluded_cells(self) -> list[str]:
+        """SOLO los h3_index de zonas EXCLUIDAS (`tipo_celda='excluida'` o el
+        `global` de la master < 0). Payload ligero (solo strings) → el front lo
+        pide UNA vez y lo cachea, en vez de escanear tile-por-tile con `get_tile`
+        (que a zoom bajo barría millones de filas por cada tile)."""
+        stmt = select(Hexagon.h3_index).where(
+            or_(Hexagon.tipo_celda == "excluida", Hexagon.score_general < 0)
+        )
+        return list(self.db.scalars(stmt))
 
     # ── Metadatos ────────────────────────────────────────────────────────────
     def variable_names(self) -> list[str]:
