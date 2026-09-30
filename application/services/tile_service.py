@@ -272,6 +272,57 @@ def get_variable_layer(source: HexagonSource, code: str,
     return out
 
 
+def get_variable_layers(source: HexagonSource, codes: list[str],
+                        bbox: Optional[dict] = None,
+                        threshold: float = 0.0,
+                        subtemplate: bool = False,
+                        res: Optional[int] = None) -> dict[str, list[dict]]:
+    """BULK: varias variables en UNA sola pasada del bbox → escanea el stream UNA
+    vez y resuelve TODOS los `codes` por hex (antes: una petición y un scan por
+    variable → N scans que apilaban los hilos). Devuelve `{code: [{h3_index,value}]}`.
+    Misma agregación por `res` que `get_variable_layer`."""
+    if not codes:
+        return {}
+    b = bbox or _COLOMBIA_BBOX
+    if res is None and bbox is None:
+        res = _COUNTRY_AGG_RES
+    available = source.variable_names()
+    # Resuelve cada código una sola vez (código efectivo + rango).
+    resolved: dict[str, tuple[str, Optional[dict]]] = {}
+    for code in codes:
+        eff, _is_sub = _resolve_code(available, code, subtemplate)
+        if eff is not None:
+            resolved[code] = (eff, source.variable_range(eff))
+    result: dict[str, list[dict]] = {c: [] for c in codes}
+    if not resolved:
+        return result
+
+    rows = source.stream_bbox(b["west"], b["south"], b["east"], b["north"])
+    # agg[code] = {parent: (suma, conteo)}  (solo el agregado vive en RAM)
+    agg: dict[str, dict[str, tuple[float, int]]] = {c: {} for c in resolved}
+    flat: dict[str, list[dict]] = {c: [] for c in resolved}
+    for hx in rows:
+        for code, (eff_code, var_range) in resolved.items():
+            _, v = variable_engine.resolve_value(hx, eff_code, available, var_range, "normalized")
+            if v is None or v < threshold:
+                continue
+            if res is not None:
+                try:
+                    parent = h3.cell_to_parent(hx.h3_index, res)
+                except Exception:  # noqa: BLE001
+                    parent = hx.h3_index
+                s, c = agg[code].get(parent, (0.0, 0))
+                agg[code][parent] = (s + v, c + 1)
+            else:
+                flat[code].append({"h3_index": hx.h3_index, "value": v})
+    for code in resolved:
+        if res is not None:
+            result[code] = [{"h3_index": p, "value": s / c} for p, (s, c) in agg[code].items()]
+        else:
+            result[code] = flat[code]
+    return result
+
+
 # ── Informe de área (método principal) ────────────────────────────────────────
 
 def get_area_report(source: HexagonSource, polygon: Optional[list] = None,
