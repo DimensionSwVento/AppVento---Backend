@@ -10,8 +10,10 @@ Punto de entrada del backend Vento (FastAPI).
 from __future__ import annotations
 import asyncio
 import logging
+import os
 from contextlib import asynccontextmanager
 
+from anyio import to_thread
 from fastapi import FastAPI
 from fastapi.concurrency import run_in_threadpool
 from fastapi.middleware.cors import CORSMiddleware
@@ -51,6 +53,18 @@ def _startup_check() -> None:
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
+    # 0) Limita la concurrencia de endpoints sync (threadpool de Starlette, 40 por
+    #    defecto) para que NUNCA supere el pool de conexiones a la BD. Así, bajo la
+    #    ráfaga de tiles del mapa, las peticiones de más hacen COLA en el threadpool
+    #    en vez de reventar con `QueuePool ... TimeoutError`. Debe quedar ≤
+    #    (DB_POOL_SIZE + DB_MAX_OVERFLOW); por defecto 18 < 20.
+    try:
+        limit = int(os.getenv("APP_THREAD_LIMIT", "18"))
+        to_thread.current_default_thread_limiter().total_tokens = limit
+        log.info("Threadpool limitado a %s hilos concurrentes (≤ pool BD).", limit)
+    except Exception as exc:  # noqa: BLE001
+        log.warning("No se pudo ajustar el límite de threadpool: %s", exc)
+
     # 1) Tablas de Postgres (dev). En prod: migraciones (Alembic).
     try:
         init_db()
