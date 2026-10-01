@@ -45,6 +45,15 @@ _max_active = 0
 _served = 0
 _errors = 0
 _t0 = 0.0
+_broken: set[str] = set()  # endpoints que ya rompieron → se SACAN del flujo y se sigue
+
+# acción del flujo → endpoint (para dropear la acción si su endpoint rompió)
+_ACTION_EP = {
+    "layers": "POST /tiles/variables-bulk",
+    "area": "POST /tiles/area",
+    "detail": "GET /tiles/detail",
+}
+_ACTION_W = {"layers": 6, "area": 2, "detail": 2}
 
 
 def _now() -> float:
@@ -92,25 +101,32 @@ def _user_flow(user: str, base: str, headers: dict, codes: list[str],
         _max_active = max(_max_active, _active)
     try:
         # Carga inicial del mapa (una vez). `excluded` se SACA: tarda ~30s y
-        # bloqueaba todo; se mide aparte si se quiere, no en el flujo normal.
-        _req(sess, user, "GET", f"{base}/api/tiles/warmup", "GET /tiles/warmup")
-        _req(sess, user, "GET", f"{base}/api/tiles/variables", "GET /tiles/variables")
+        # bloqueaba todo. Si warmup/variables ya rompieron, también se saltan.
+        if "GET /tiles/warmup" not in _broken:
+            _req(sess, user, "GET", f"{base}/api/tiles/warmup", "GET /tiles/warmup")
+        if "GET /tiles/variables" not in _broken:
+            _req(sess, user, "GET", f"{base}/api/tiles/variables", "GET /tiles/variables")
         while not stop.is_set():
-            action = random.choices(["layers", "area", "detail", "idle"],
-                                    weights=[6, 2, 2, 1])[0]
-            if action == "layers" and codes:
+            # Acciones DISPONIBLES = las que tienen datos y cuyo endpoint NO ha roto
+            # (los rotos se SACAN del flujo → se sigue martillando los sanos).
+            avail = [a for a in ("layers", "area", "detail")
+                     if _ACTION_EP[a] not in _broken
+                     and (codes if a == "layers" else hexes)]
+            if not avail:
+                time.sleep(random.uniform(0.2, 1.0))
+                continue
+            action = random.choices(avail, weights=[_ACTION_W[a] for a in avail])[0]
+            if action == "layers":
                 _req(sess, user, "POST", f"{base}/api/tiles/variables-bulk",
                      "POST /tiles/variables-bulk",
                      json={"codes": random.sample(codes, random.randint(1, min(3, len(codes)))),
                            "bbox": _rand_bbox(), "res": random.choice([5, 6, 7, 8])})
-            elif action == "area" and hexes:
+            elif action == "area":
                 _req(sess, user, "POST", f"{base}/api/tiles/area", "POST /tiles/area",
                      json={"hexes": random.sample(hexes, min(len(hexes), random.randint(20, 300)))})
-            elif action == "detail" and hexes:
+            elif action == "detail":
                 _req(sess, user, "GET", f"{base}/api/tiles/detail/{random.choice(hexes)}",
                      "GET /tiles/detail")
-            else:
-                time.sleep(random.uniform(0.2, 1.2))
             time.sleep(random.uniform(0.05, 0.4))  # think time
     finally:
         with _lock:
@@ -223,23 +239,35 @@ def _bootstrap(base: str, headers: dict) -> tuple[list[str], list[str]]:
             print("  !! 401/403 → falta/expiró el token. Pasa --token o --cookie de tu sesión.", flush=True)
     except Exception as e:  # noqa: BLE001
         print(f"  !! /tiles/variables FALLÓ: {type(e).__name__}: {e}", flush=True)
-    # Hexes de muestra desde /variables-bulk (rápido, devuelve h3_index) — NO de
-    # /excluded (tarda ~30s). Así area/detail tienen celdas reales que pedir.
+    # Hexes de muestra desde /variables-bulk a RES 8 (celdas REALES que existen en la
+    # BD → `detail` no da 404). NO de /excluded (tarda ~30s). Se prueban varios bbox
+    # CHICOS (0.4°) hasta encontrar uno con datos (muchos caen en mar/sin cobertura).
     if codes:
-        try:
-            r = requests.post(f"{base}/api/tiles/variables-bulk", headers=headers, timeout=30,
-                              json={"codes": codes[:2], "bbox": _rand_bbox(), "res": 7})
-            print(f"  bootstrap POST /tiles/variables-bulk → {r.status_code}", flush=True)
-            if r.ok:
-                seen: set[str] = set()
-                for rows in (r.json() or {}).values():
-                    for row in rows or []:
-                        h = row.get("h3_index")
-                        if h:
-                            seen.add(h)
-                hexes = random.sample(list(seen), min(len(seen), 3000)) if seen else []
-        except Exception as e:  # noqa: BLE001
-            print(f"  !! /tiles/variables-bulk FALLÓ: {type(e).__name__}: {e}", flush=True)
+        for _try in range(5):
+            b = _rand_bbox()
+            small = {"west": b["west"], "south": b["south"],
+                     "east": b["west"] + 0.4, "north": b["south"] + 0.4}
+            try:
+                r = requests.post(f"{base}/api/tiles/variables-bulk", headers=headers, timeout=30,
+                                  json={"codes": codes[:2], "bbox": small, "res": 8})
+                if r.ok:
+                    seen: set[str] = set()
+                    for rows in (r.json() or {}).values():
+                        for row in rows or []:
+                            h = row.get("h3_index")
+                            if h:
+                                seen.add(h)
+                    if seen:
+                        hexes = random.sample(list(seen), min(len(seen), 3000))
+                        print(f"  bootstrap POST /tiles/variables-bulk (res8) → {r.status_code}, "
+                              f"{len(hexes)} hexes de muestra", flush=True)
+                        break
+                else:
+                    print(f"  bootstrap POST /tiles/variables-bulk → {r.status_code}", flush=True)
+                    if r.status_code in (401, 403):
+                        break
+            except Exception as e:  # noqa: BLE001
+                print(f"  !! /tiles/variables-bulk FALLÓ: {type(e).__name__}: {e}", flush=True)
     if not codes and not hexes:
         print("  !! codes=0 y hexes=0 → el bucle no tendrá qué pedir. Arregla base/auth "
               "antes de correr la prueba.", flush=True)
@@ -413,8 +441,15 @@ def main() -> None:
         line = f"etapa {users:>4} usuarios: " + "  ".join(parts)
         print("  >> " + line, flush=True)
         stage_summ.append(line)
-        # Solo se detiene si TODOS los endpoints vistos ya tienen límite (todo roto).
-        if ep_stage and all(ep in limits for ep in ep_stage):
+        # DROP de los rotos: se SACAN del flujo y se SIGUE con los sanos (sin parar).
+        newly = [ep for ep in limits if ep not in _broken]
+        _broken.update(limits.keys())
+        if newly:
+            print("  (sacados del flujo, se sigue con los demás: " + ", ".join(newly) + ")", flush=True)
+        # Solo se detiene si YA NO queda ningún endpoint sano que probar.
+        all_eps = {"GET /tiles/warmup", "GET /tiles/variables",
+                   "POST /tiles/variables-bulk", "POST /tiles/area", "GET /tiles/detail"}
+        if all_eps <= _broken:
             print("\n>>> todos los endpoints rompieron; se detiene.", flush=True)
             break
 
