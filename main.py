@@ -26,7 +26,7 @@ from infrastructure.db.session import init_db, SessionLocal
 from infrastructure.db.hexagon_query_repository import PostgresHexagonSource
 from infrastructure.db.catalog_seed import seed_catalog
 from application.services import master_service, catalog_ingest
-from api.routers import admin_catalog, admin_master, admin_bundle, historial, tiles
+from api.routers import admin_catalog, admin_master, admin_bundle, admin_db, historial, tiles
 
 # Cada cuánto revisa el scheduler si hay una actualización de master programada.
 _MASTER_TICK_SECONDS = 60
@@ -228,6 +228,7 @@ app.include_router(historial.router, prefix="/api")
 app.include_router(admin_catalog.router, prefix="/api")
 app.include_router(admin_master.router, prefix="/api")
 app.include_router(admin_bundle.router, prefix="/api")
+app.include_router(admin_db.router, prefix="/api")
 
 
 @app.get("/api/health", tags=["health"])
