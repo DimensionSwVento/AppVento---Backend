@@ -25,6 +25,7 @@ from __future__ import annotations
 import argparse
 import csv
 import random
+import subprocess
 import threading
 import time
 
@@ -49,10 +50,10 @@ def _now() -> float:
     return time.time() - _t0
 
 
-def _record(user: str, endpoint: str, ms: float, ok: bool) -> None:
+def _record(user: str, endpoint: str, ms: float, ok: bool, status: object) -> None:
     global _served, _errors
     with _lock:
-        _events.append((round(_now(), 3), user, endpoint, round(ms, 1), ok))
+        _events.append((round(_now(), 3), user, endpoint, round(ms, 1), ok, status))
         _served += 1
         if not ok:
             _errors += 1
@@ -61,13 +62,16 @@ def _record(user: str, endpoint: str, ms: float, ok: bool) -> None:
 def _req(sess: requests.Session, user: str, method: str, url: str, label: str, **kw) -> None:
     t = time.perf_counter()
     ok = False
+    status: object = "ERR"
     try:
         r = sess.request(method, url, timeout=30, **kw)
+        status = r.status_code
         ok = r.status_code < 400
-    except Exception:  # noqa: BLE001 — timeout/conn reset = fallo
+    except Exception as e:  # noqa: BLE001 — timeout/conn reset = fallo (se registra el motivo)
+        status = f"ERR:{type(e).__name__}"
         ok = False
     finally:
-        _record(user, label, (time.perf_counter() - t) * 1000, ok)
+        _record(user, label, (time.perf_counter() - t) * 1000, ok, status)
 
 
 def _rand_bbox() -> dict:
@@ -119,8 +123,49 @@ def _poll_stats(base: str, headers: dict) -> dict:
         return {}
 
 
-def _monitor(base: str, headers: dict, stop: threading.Event, interval: int = 2) -> None:
+def _poll_inflight(base: str, headers: dict) -> str:
+    """Top peticiones EN VUELO ahora en el server (lo que da /_debug/inflight):
+    'path(age_ms)'. Vacío si no está disponible."""
+    try:
+        r = requests.get(f"{base}/api/_debug/inflight", headers=headers, timeout=5)
+        if not r.ok:
+            return ""
+        items = (r.json().get("requests") or [])[:5]
+        return " ".join(f"{i.get('path','?')}({i.get('age_ms','?')}ms)" for i in items)
+    except Exception:  # noqa: BLE001
+        return ""
+
+
+def _gunicorn_pids() -> list[str]:
+    try:
+        out = subprocess.run(["pgrep", "-f", "gunicorn"], capture_output=True, text=True, timeout=5)
+        pids = [p for p in out.stdout.split() if p]
+        return pids[1:] if len(pids) > 1 else pids  # salta el master (1er pid)
+    except Exception:  # noqa: BLE001
+        return []
+
+
+def _pyspy_dump(venv: str, pids: list[str], out_file: str, t: float) -> None:
+    """Vuelca el stack de TODOS los hilos de cada worker (lo que hace py-spy dump).
+    Requiere py-spy instalado (venv) y permisos (sudo). Si falla, se ignora."""
+    bin_ = f"{venv}/bin/py-spy" if venv else "py-spy"
+    with open(out_file, "a", encoding="utf-8") as f:
+        for pid in pids:
+            f.write(f"\n===== t={t:.0f}s  pid={pid} =====\n")
+            for cmd in (["sudo", bin_, "dump", "--pid", pid], [bin_, "dump", "--pid", pid]):
+                try:
+                    r = subprocess.run(cmd, capture_output=True, text=True, timeout=15)
+                    f.write(r.stdout or r.stderr)
+                    if r.returncode == 0:
+                        break
+                except Exception as e:  # noqa: BLE001
+                    f.write(f"(py-spy falló: {type(e).__name__})\n")
+
+
+def _monitor(base: str, headers: dict, stop: threading.Event,
+             pyspy_file: str | None, venv: str, interval: int = 2) -> None:
     last = 0
+    pids = _gunicorn_pids() if pyspy_file else []
     while not stop.is_set():
         time.sleep(interval)
         with _lock:
@@ -132,16 +177,20 @@ def _monitor(base: str, headers: dict, stop: threading.Event, interval: int = 2)
         lat = sorted(e[3] for e in recent)
         p95 = lat[int(len(lat) * 0.95)] if lat else 0
         st = _poll_stats(base, headers)
+        inflight_detail = _poll_inflight(base, headers)
         row = {"t": round(_now(), 1), "active": active, "rps": rps, "p95_ms": round(p95),
                "sys_used_mb": st.get("sys_used_mb", "-"), "sys_avail_mb": st.get("sys_avail_mb", "-"),
                "swap_used_mb": st.get("swap_used_mb", "-"), "inflight": st.get("inflight", "-"),
-               "worker_rss_mb": st.get("worker_rss_mb", "-"), "worker_pid": st.get("pid", "-")}
+               "worker_rss_mb": st.get("worker_rss_mb", "-"), "worker_pid": st.get("pid", "-"),
+               "stuck": inflight_detail}
         with _lock:
             _timeline.append(row)
         print(f"  t={row['t']:>6}s  activos={active:>4}  rps={rps:>7}  p95={row['p95_ms']:>6}ms  "
               f"RAM_usada={row['sys_used_mb']}MB  disp={row['sys_avail_mb']}MB  "
               f"swap={row['swap_used_mb']}  inflight={row['inflight']}  "
               f"rss_worker={row['worker_rss_mb']}MB(pid {row['worker_pid']})", flush=True)
+        if pyspy_file and pids:
+            _pyspy_dump(venv, pids, pyspy_file, row["t"])
 
 
 def _pct(vals: list[float], p: float) -> float:
@@ -152,36 +201,53 @@ def _pct(vals: list[float], p: float) -> float:
 
 
 def _bootstrap(base: str, headers: dict) -> tuple[list[str], list[str]]:
+    """Preflight: comprueba conectividad/auth e imprime el motivo si falla. Deriva
+    códigos (/variables) y hexes de muestra (/excluded) reales."""
     codes: list[str] = []
     hexes: list[str] = []
+    # Preflight claro: si esto falla, TODAS las peticiones fallarán igual.
+    try:
+        r = requests.get(f"{base}/api/health", headers=headers, timeout=10)
+        print(f"  preflight GET /api/health → {r.status_code}", flush=True)
+    except Exception as e:  # noqa: BLE001
+        print(f"  !! preflight FALLÓ: {type(e).__name__}: {e}", flush=True)
+        print(f"  !! Revisa --base ({base}) y que el server esté arriba/accesible.", flush=True)
     try:
         r = requests.get(f"{base}/api/tiles/variables", headers=headers, timeout=30)
+        print(f"  bootstrap GET /tiles/variables → {r.status_code}", flush=True)
         if r.ok:
             codes = [v["name"] for v in (r.json().get("variables") or []) if v.get("name")]
-    except Exception:  # noqa: BLE001
-        pass
+        elif r.status_code in (401, 403):
+            print("  !! 401/403 → falta/expiró el token. Pasa --token o --cookie de tu sesión.", flush=True)
+    except Exception as e:  # noqa: BLE001
+        print(f"  !! /tiles/variables FALLÓ: {type(e).__name__}: {e}", flush=True)
     try:
         r = requests.get(f"{base}/api/tiles/excluded", headers=headers, timeout=60)
+        print(f"  bootstrap GET /tiles/excluded → {r.status_code}", flush=True)
         if r.ok:
             cells = r.json().get("cells") or []
             hexes = random.sample(cells, min(len(cells), 3000)) if cells else []
-    except Exception:  # noqa: BLE001
-        pass
+    except Exception as e:  # noqa: BLE001
+        print(f"  !! /tiles/excluded FALLÓ: {type(e).__name__}: {e}", flush=True)
+    if not codes and not hexes:
+        print("  !! codes=0 y hexes=0 → el bucle no tendrá qué pedir. Arregla base/auth "
+              "antes de correr la prueba.", flush=True)
     return codes, hexes
 
 
 def _write_reports(out_txt: str, cfg: list[str], broke_at, stages, stage_secs) -> None:
     base = out_txt.rsplit(".", 1)[0]
-    # 1) requests.csv — histórico de CADA petición
+    # 1) requests.csv — histórico de CADA petición (ordenado por tiempo), con STATUS
+    #    (código HTTP o ERR:<excepción>) → se ve el orden y el resultado de cada una.
     with open(f"{base}-requests.csv", "w", newline="", encoding="utf-8") as f:
         w = csv.writer(f)
-        w.writerow(["t_s", "usuario", "endpoint", "ms", "ok"])
+        w.writerow(["t_s", "usuario", "endpoint", "ms", "ok", "status"])
         with _lock:
-            w.writerows(_events)
+            w.writerows(sorted(_events, key=lambda e: e[0]))
     # 2) users.csv + agregado por usuario
     by_user: dict[str, list[tuple[str, float, bool]]] = {}
     with _lock:
-        for t, u, ep, ms, ok in _events:
+        for t, u, ep, ms, ok, _st in _events:
             by_user.setdefault(u, []).append((ep, ms, ok))
     user_rows = []
     for u, evs in by_user.items():
@@ -207,18 +273,33 @@ def _write_reports(out_txt: str, cfg: list[str], broke_at, stages, stage_secs) -
         lines.append(f"{r['t']:>6} {r['active']:>7} {r['rps']:>7} {r['p95_ms']:>6} "
                      f"{r['sys_used_mb']:>6} {r['sys_avail_mb']:>6} {r['swap_used_mb']:>5} "
                      f"{r['inflight']:>8} {r['worker_rss_mb']:>6}")
-    # por endpoint
-    by_ep: dict[str, list[tuple[float, bool]]] = {}
+    # Peticiones EN VUELO (stuck) por momento, si /_debug/inflight está disponible.
+    stuck_rows = [(r["t"], r.get("stuck")) for r in _timeline if r.get("stuck")]
+    if stuck_rows:
+        lines.append("\n## En vuelo (stuck) por momento — path(age)")
+        for t, s in stuck_rows:
+            lines.append(f"  t={t}s  {s}")
+    # por endpoint (+ desglose de STATUS: 200/401/404/500/ERR… → ves la causa)
+    by_ep: dict[str, list[tuple[float, bool, object]]] = {}
+    status_total: dict[object, int] = {}
     with _lock:
-        for _t, _u, ep, ms, ok in _events:
-            by_ep.setdefault(ep, []).append((ms, ok))
+        for _t, _u, ep, ms, ok, st in _events:
+            by_ep.setdefault(ep, []).append((ms, ok, st))
+            status_total[st] = status_total.get(st, 0) + 1
+    lines.append("\n## Status global (código HTTP o ERR:<excepción>)")
+    for st, c in sorted(status_total.items(), key=lambda kv: -kv[1]):
+        lines.append(f"  {str(st):<20} {c}")
     lines.append("\n## Por endpoint")
-    lines.append(f"{'endpoint':<28} {'req':>7} {'err%':>5} {'p50':>6} {'p95':>6} {'p99':>6} {'max':>7}")
+    lines.append(f"{'endpoint':<28} {'req':>7} {'err%':>5} {'p50':>6} {'p95':>6} {'p99':>6} {'max':>7}  status")
     for ep, evs in sorted(by_ep.items(), key=lambda kv: -len(kv[1])):
         lat = [e[0] for e in evs]
         errp = round(100 * sum(1 for e in evs if not e[1]) / len(evs), 1)
+        sts: dict[object, int] = {}
+        for e in evs:
+            sts[e[2]] = sts.get(e[2], 0) + 1
+        st_str = " ".join(f"{k}:{v}" for k, v in sorted(sts.items(), key=lambda kv: -kv[1]))
         lines.append(f"{ep:<28} {len(evs):>7} {errp:>5} {round(_pct(lat,0.5)):>6} "
-                     f"{round(_pct(lat,0.95)):>6} {round(_pct(lat,0.99)):>6} {round(max(lat)):>7}")
+                     f"{round(_pct(lat,0.95)):>6} {round(_pct(lat,0.99)):>6} {round(max(lat)):>7}  {st_str}")
     # por usuario (distribución; detalle completo en users.csv)
     reqs_per_user = sorted(r["peticiones"] for r in user_rows)
     lines.append("\n## Por usuario (distribución; detalle completo en *-users.csv)")
@@ -255,6 +336,9 @@ def main() -> None:
     ap.add_argument("--break-err", type=float, default=25.0)
     ap.add_argument("--break-p95", type=float, default=8000.0)
     ap.add_argument("--out", default="loadtest-report.txt")
+    ap.add_argument("--pyspy", action="store_true",
+                    help="volca stacks de hilos (py-spy dump) de los workers gunicorn cada 2s")
+    ap.add_argument("--venv", default="", help="ruta del venv (para hallar py-spy)")
     args = ap.parse_args()
 
     headers: dict = {}
@@ -277,7 +361,10 @@ def main() -> None:
         print(c, flush=True)
 
     mon_stop = threading.Event()
-    threading.Thread(target=_monitor, args=(args.base, headers, mon_stop), daemon=True).start()
+    pyspy_file = f"{args.out.rsplit('.', 1)[0]}-pyspy.txt" if args.pyspy else None
+    threading.Thread(target=_monitor,
+                     args=(args.base, headers, mon_stop, pyspy_file, args.venv),
+                     daemon=True).start()
 
     broke_at = None
     stage_summ: list[str] = []
