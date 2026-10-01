@@ -35,6 +35,7 @@ except ImportError:  # noqa: BLE001
     raise SystemExit("Falta 'requests': pip install requests")
 
 _W, _S, _E, _N = -79.0, -4.2, -67.0, 12.5
+_TIMEOUT = 10.0  # s por petición (corto → un endpoint lento FALLA rápido y el user sigue)
 
 _lock = threading.Lock()
 _events: list[tuple[float, str, str, float, bool]] = []  # (t, user, endpoint, ms, ok)
@@ -64,7 +65,7 @@ def _req(sess: requests.Session, user: str, method: str, url: str, label: str, *
     ok = False
     status: object = "ERR"
     try:
-        r = sess.request(method, url, timeout=30, **kw)
+        r = sess.request(method, url, timeout=_TIMEOUT, **kw)
         status = r.status_code
         ok = r.status_code < 400
     except Exception as e:  # noqa: BLE001 — timeout/conn reset = fallo (se registra el motivo)
@@ -90,8 +91,9 @@ def _user_flow(user: str, base: str, headers: dict, codes: list[str],
         _active += 1
         _max_active = max(_max_active, _active)
     try:
+        # Carga inicial del mapa (una vez). `excluded` se SACA: tarda ~30s y
+        # bloqueaba todo; se mide aparte si se quiere, no en el flujo normal.
         _req(sess, user, "GET", f"{base}/api/tiles/warmup", "GET /tiles/warmup")
-        _req(sess, user, "GET", f"{base}/api/tiles/excluded", "GET /tiles/excluded")
         _req(sess, user, "GET", f"{base}/api/tiles/variables", "GET /tiles/variables")
         while not stop.is_set():
             action = random.choices(["layers", "area", "detail", "idle"],
@@ -221,21 +223,30 @@ def _bootstrap(base: str, headers: dict) -> tuple[list[str], list[str]]:
             print("  !! 401/403 → falta/expiró el token. Pasa --token o --cookie de tu sesión.", flush=True)
     except Exception as e:  # noqa: BLE001
         print(f"  !! /tiles/variables FALLÓ: {type(e).__name__}: {e}", flush=True)
-    try:
-        r = requests.get(f"{base}/api/tiles/excluded", headers=headers, timeout=60)
-        print(f"  bootstrap GET /tiles/excluded → {r.status_code}", flush=True)
-        if r.ok:
-            cells = r.json().get("cells") or []
-            hexes = random.sample(cells, min(len(cells), 3000)) if cells else []
-    except Exception as e:  # noqa: BLE001
-        print(f"  !! /tiles/excluded FALLÓ: {type(e).__name__}: {e}", flush=True)
+    # Hexes de muestra desde /variables-bulk (rápido, devuelve h3_index) — NO de
+    # /excluded (tarda ~30s). Así area/detail tienen celdas reales que pedir.
+    if codes:
+        try:
+            r = requests.post(f"{base}/api/tiles/variables-bulk", headers=headers, timeout=30,
+                              json={"codes": codes[:2], "bbox": _rand_bbox(), "res": 7})
+            print(f"  bootstrap POST /tiles/variables-bulk → {r.status_code}", flush=True)
+            if r.ok:
+                seen: set[str] = set()
+                for rows in (r.json() or {}).values():
+                    for row in rows or []:
+                        h = row.get("h3_index")
+                        if h:
+                            seen.add(h)
+                hexes = random.sample(list(seen), min(len(seen), 3000)) if seen else []
+        except Exception as e:  # noqa: BLE001
+            print(f"  !! /tiles/variables-bulk FALLÓ: {type(e).__name__}: {e}", flush=True)
     if not codes and not hexes:
         print("  !! codes=0 y hexes=0 → el bucle no tendrá qué pedir. Arregla base/auth "
               "antes de correr la prueba.", flush=True)
     return codes, hexes
 
 
-def _write_reports(out_txt: str, cfg: list[str], broke_at, stages, stage_secs) -> None:
+def _write_reports(out_txt: str, cfg: list[str]) -> None:
     base = out_txt.rsplit(".", 1)[0]
     # 1) requests.csv — histórico de CADA petición (ordenado por tiempo), con STATUS
     #    (código HTTP o ERR:<excepción>) → se ve el orden y el resultado de cada una.
@@ -310,16 +321,10 @@ def _write_reports(out_txt: str, cfg: list[str], broke_at, stages, stage_secs) -
         slow = sorted(user_rows, key=lambda r: -r["p95_ms"])[:5]
         lines.append("- 5 usuarios más lentos (p95 ms): " +
                      ", ".join(f"{r['usuario']}={r['p95_ms']}" for r in slow))
-    # resumen
+    # resumen (el límite POR ENDPOINT se añade a `cfg` desde main)
     lines.append("\n## Resumen")
     lines.append(f"- Pico de usuarios concurrentes: {_max_active}")
     lines.append(f"- Peticiones totales: {_served}  (errores: {_errors})")
-    if broke_at:
-        idx = stages.index(broke_at)
-        lines.append(f"- Última etapa ESTABLE: {stages[idx-1] if idx>0 else 0} usuarios · "
-                     f"ROMPIÓ en: {broke_at}")
-    else:
-        lines.append(f"- No rompió hasta {stages[-1]} usuarios (sube --stages para el techo).")
     with open(out_txt, "w", encoding="utf-8") as f:
         f.write("\n".join(lines) + "\n")
     print(f"\nReportes: {out_txt} · {base}-requests.csv · {base}-users.csv", flush=True)
@@ -335,11 +340,16 @@ def main() -> None:
     ap.add_argument("--stage-secs", type=int, default=20)
     ap.add_argument("--break-err", type=float, default=25.0)
     ap.add_argument("--break-p95", type=float, default=8000.0)
+    ap.add_argument("--req-timeout", type=float, default=10.0,
+                    help="timeout por petición (s); corto → un endpoint lento falla rápido y sigue")
     ap.add_argument("--out", default="loadtest-report.txt")
     ap.add_argument("--pyspy", action="store_true",
                     help="volca stacks de hilos (py-spy dump) de los workers gunicorn cada 2s")
     ap.add_argument("--venv", default="", help="ruta del venv (para hallar py-spy)")
     args = ap.parse_args()
+
+    global _TIMEOUT
+    _TIMEOUT = args.req_timeout
 
     headers: dict = {}
     if args.token:
@@ -366,7 +376,7 @@ def main() -> None:
                      args=(args.base, headers, mon_stop, pyspy_file, args.venv),
                      daemon=True).start()
 
-    broke_at = None
+    limits: dict[str, int] = {}  # endpoint → nº usuarios donde ROMPIÓ (1ª vez)
     stage_summ: list[str] = []
     for users in stages:
         stop = threading.Event()
@@ -374,7 +384,6 @@ def main() -> None:
                                     args=(f"{users}#{i}", args.base, headers, codes, hexes, stop),
                                     daemon=True) for i in range(users)]
         with _lock:
-            base_served = _served
             t_mark = _now()
         for t in threads:
             t.start()
@@ -385,23 +394,42 @@ def main() -> None:
             t.join(timeout=5)
         with _lock:
             evs = [e for e in _events if e[0] >= t_mark]
-        lat = [e[3] for e in evs if e[4]]
-        errp = round(100 * sum(1 for e in evs if not e[4]) / len(evs), 1) if evs else 0
-        p95 = round(_pct(lat, 0.95))
-        line = (f"etapa {users:>4} usuarios: req={len(evs):>6} err={errp:>5}% "
-                f"p95={p95:>6}ms  (servidas totales={_served})")
+        # Stats POR ENDPOINT en esta etapa → marca el LÍMITE de cada uno (sin parar
+        # la prueba: si uno rompe, se anota y se SIGUE con los demás).
+        ep_stage: dict[str, list] = {}
+        for e in evs:
+            ep_stage.setdefault(e[2], []).append(e)
+        parts = []
+        for ep in sorted(ep_stage):
+            es = ep_stage[ep]
+            lat = [x[3] for x in es if x[4]]
+            errp = round(100 * sum(1 for x in es if not x[4]) / len(es), 1)
+            p95 = round(_pct(lat, 0.95))
+            broke = errp >= args.break_err or p95 >= args.break_p95
+            if ep not in limits and broke:
+                limits[ep] = users
+            short = ep.split()[-1]
+            parts.append(f"{short}{'⚠' if broke else ''}(err{errp}% p95{p95})")
+        line = f"etapa {users:>4} usuarios: " + "  ".join(parts)
         print("  >> " + line, flush=True)
         stage_summ.append(line)
-        if errp >= args.break_err or p95 >= args.break_p95:
-            broke_at = users
-            print(f"\n>>> ROMPIÓ en {users} usuarios (err {errp}% · p95 {p95}ms).", flush=True)
+        # Solo se detiene si TODOS los endpoints vistos ya tienen límite (todo roto).
+        if ep_stage and all(ep in limits for ep in ep_stage):
+            print("\n>>> todos los endpoints rompieron; se detiene.", flush=True)
             break
 
     mon_stop.set()
     time.sleep(0.2)
-    cfg.append("\n## Etapas")
+    cfg.append("\n## Etapas (⚠ = rompió en esa etapa)")
     cfg.extend(stage_summ)
-    _write_reports(args.out, cfg, broke_at, stages, args.stage_secs)
+    cfg.append("\n## Límite por endpoint (nº usuarios concurrentes donde rompió)")
+    seen_eps = set()
+    with _lock:
+        for e in _events:
+            seen_eps.add(e[2])
+    for ep in sorted(seen_eps):
+        cfg.append(f"  {ep:<28} → {('ROMPIÓ en ' + str(limits[ep])) if ep in limits else 'estable (no rompió)'}")
+    _write_reports(args.out, cfg)
 
 
 if __name__ == "__main__":
