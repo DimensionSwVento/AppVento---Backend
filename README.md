@@ -63,3 +63,21 @@ Requiere **Postgres** (para el histórico y la verificación de usuario) y **Key
 - Pasos completos de prueba: **[PRUEBAS-DATOS-REALES.md](PRUEBAS-DATOS-REALES.md)**.
 
 > Migraciones: en dev las tablas se crean solas al arrancar (`init_db`). En prod usar Alembic.
+
+## Límites de concurrencia por endpoint (capacidad)
+
+Medido con `tools/loadtest.py` en el server de **2 workers / ~2 GB**. Techo =
+usuarios concurrentes antes de degradar (err>25% o p95>8 s). "Por GB" ≈ 1 worker ≈
+18 operaciones de BD concurrentes por cada ~1 GB de RAM (escala con workers).
+
+| Endpoint | Techo (2 GB) | ≈ por GB | Cuello | Datos movidos / request |
+|---|---|---|---|---|
+| `GET /tiles/detail` | ~100 | ~50 | app (2 workers) | 1 hex · 1 fila (~0,7 KB) · PK |
+| `POST /tiles/area` | ~100 | ~50 | app | 20–300 hexes (res8) · ~0,06–0,22 MB · PK/IN |
+| `GET /tiles/variables` | ~100 | ~50 | app | 62 filas meta (~KB) |
+| `GET /tiles/warmup` | ~50 → **>100** (fix) | ~25 → >50 | BD (`count(*)`) | estimado `reltuples` (0 filas; antes ~954 MB) |
+| `GET /tiles/excluded` | scan ~30 s → ms (índice+caché) | — | BD (sin índice) | solo `h3_index` excluidos |
+| `POST /tiles/variables-bulk` | **~10** | ~5 | **BD** (scan bbox) | hasta ~221 K filas × ~0,7 KB ≈ **165 MB leídos** |
+
+Detalle, herramientas y configuración: **[docs/ops/documento-tecnico-comportamiento-herramientas-config.md](../../docs/ops/documento-tecnico-comportamiento-herramientas-config.md)** ·
+evidencia: **[docs/testing/benchmark-carga-h3-2026-09-30.md](../../docs/testing/benchmark-carga-h3-2026-09-30.md)**.

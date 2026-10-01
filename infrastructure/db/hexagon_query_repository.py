@@ -143,6 +143,18 @@ class PostgresHexagonSource:
     def count(self) -> int:
         return self.db.scalar(select(func.count()).select_from(Hexagon)) or 0
 
+    def count_estimate(self) -> int:
+        """Conteo APROXIMADO e instantáneo del planner (`pg_class.reltuples`), sin
+        escanear la tabla. El `count(*)` exacto sobre ~1,6 M filas costaba ~720 ms
+        (index-only scan con cientos de miles de heap-fetches) y es lo que tumbaba
+        `/tiles/warmup` bajo carga. Se usa para el bundle de metadatos (número
+        informativo); si las estadísticas aún no se poblaron (reltuples ≤ 0, tabla
+        recién ingerida sin ANALYZE) cae al conteo exacto una vez."""
+        r = self.db.execute(
+            text("SELECT reltuples::bigint FROM pg_class WHERE relname = 'hexagon'")
+        ).scalar()
+        return int(r) if r and r > 0 else self.count()
+
     def counts(self, selected: list[str], var_name: Optional[str] = None,
                threshold: float = 0.33) -> dict:
         total = self.count()

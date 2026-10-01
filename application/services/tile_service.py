@@ -11,6 +11,8 @@ La ingesta (`update_from_parquet`) vive aquí porque comparte el lector del parq
 from __future__ import annotations
 import hashlib
 import logging
+import os
+import time
 from typing import Optional
 
 import h3
@@ -59,12 +61,17 @@ def index_ready(source: HexagonSource) -> bool:
 
 
 def warmup(source: HexagonSource) -> dict:
-    """Bundle de metadatos (barato: count + `hexagon_meta`). Ya no carga datos."""
+    """Bundle de metadatos (barato: `hexagon_meta` + conteo estimado). Ya no carga
+    datos. El estado ('ready'/'empty') usa `is_ready()` (EXISTS O(1)); el número
+    usa el conteo ESTIMADO del planner (no el `count(*)` exacto, que costaba ~720 ms
+    y tumbaba este endpoint bajo carga). Ver `count_estimate` en el repositorio."""
     names  = source.variable_names()
     ranges = source.variable_ranges()
-    count  = source.count()
+    est_fn = getattr(source, "count_estimate", None)
+    count  = est_fn() if callable(est_fn) else source.count()
+    ready  = source.is_ready()
     return {
-        "status":        "ready" if count else "empty",
+        "status":        "ready" if ready else "empty",
         "count":         count,
         "variableNames": names,
         "categories":    extract_categories(names),
@@ -144,11 +151,34 @@ def get_tile(source: HexagonSource, z: int, x: int, y: int,
     return out
 
 
+# Caché EN PROCESO de la capa de excluidos: la consulta es un scan completo sin
+# índice (~30 s) y el set solo cambia en la ingesta. Se cachea con TTL + se
+# invalida explícitamente al reingerir (`update_from_parquet`). Por worker: cada
+# proceso gunicorn la calcula una vez y la reutiliza (el TTL cubre reingestas en
+# otro worker). El fix definitivo es el índice parcial / tabla `hexagon_excluded`
+# (ver _bmad-output/.../architecture-db-espacial-h3.md).
+_excluded_cache: dict = {"cells": None, "ts": 0.0}
+_EXCLUDED_TTL = float(os.getenv("EXCLUDED_CACHE_TTL", "300"))
+
+
+def invalidate_excluded_cache() -> None:
+    _excluded_cache["cells"] = None
+    _excluded_cache["ts"] = 0.0
+
+
 def excluded_cells(source: HexagonSource) -> list[str]:
     """Todos los h3 excluidos (capa completa) en UNA sola consulta → el front los
-    cachea y deja de pedir `get_tile` por cada tile solo para marcar excluidos."""
+    cachea y deja de pedir `get_tile` por cada tile solo para marcar excluidos.
+    Cacheado en proceso (TTL) porque la consulta es un scan completo sin índice."""
+    now = time.time()
+    cached = _excluded_cache["cells"]
+    if cached is not None and (now - _excluded_cache["ts"]) < _EXCLUDED_TTL:
+        return cached
     fn = getattr(source, "excluded_cells", None)
-    return fn() if callable(fn) else []
+    cells = fn() if callable(fn) else []
+    _excluded_cache["cells"] = cells
+    _excluded_cache["ts"] = now
+    return cells
 
 
 def _offshore_flag(variables: dict) -> Optional[int]:
@@ -452,5 +482,9 @@ def update_from_parquet(db, path: str | None = None, on_progress=None) -> int:
 
     rows = iter_parquet_rows(path or PARQUET_PATH)
     if HEXAGON_INGEST == "orm":
-        return hexrepo.replace_all(db, rows, on_progress=on_progress)
-    return hexrepo.copy_ingest(db, rows, on_progress=on_progress)
+        n = hexrepo.replace_all(db, rows, on_progress=on_progress)
+    else:
+        n = hexrepo.copy_ingest(db, rows, on_progress=on_progress)
+    # La capa de excluidos cambió → invalida la caché en proceso.
+    invalidate_excluded_cache()
+    return n
