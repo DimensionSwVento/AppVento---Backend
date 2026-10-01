@@ -187,6 +187,41 @@ def debug_inflight():
     return {"count": len(items), "requests": items}
 
 
+@app.get("/api/_debug/stats", include_in_schema=False)
+def debug_stats():
+    """RAM del sistema + RSS de ESTE worker + peticiones en vuelo → el load test lo
+    sondea para registrar memoria/concurrencia en cada momento. Gate: DEBUG_INFLIGHT=1.
+    Lee /proc (Linux, sin dependencias). Como cada request cae en un worker distinto,
+    sondearlo repetido muestrea el RSS de los distintos workers (por `pid`)."""
+    if os.getenv("DEBUG_INFLIGHT", "0") != "1":
+        raise HTTPException(status_code=404, detail="disabled")
+    out: dict = {"pid": os.getpid()}
+    try:
+        info: dict[str, int] = {}
+        with open("/proc/meminfo", encoding="utf-8") as f:
+            for line in f:
+                k, _, rest = line.partition(":")
+                info[k.strip()] = int(rest.strip().split()[0])  # kB
+        total = info.get("MemTotal", 0)
+        avail = info.get("MemAvailable", 0)
+        out.update(sys_total_mb=round(total / 1024), sys_avail_mb=round(avail / 1024),
+                   sys_used_mb=round((total - avail) / 1024))
+        out["swap_used_mb"] = round((info.get("SwapTotal", 0) - info.get("SwapFree", 0)) / 1024)
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        with open("/proc/self/status", encoding="utf-8") as f:
+            for line in f:
+                if line.startswith("VmRSS:"):
+                    out["worker_rss_mb"] = round(int(line.split()[1]) / 1024)
+                    break
+    except Exception:  # noqa: BLE001
+        pass
+    with _inflight_lock:
+        out["inflight"] = len(_inflight)
+    return out
+
+
 # Todos los endpoints cuelgan de /api (coincide con el rewrite del frontend).
 app.include_router(tiles.router, prefix="/api")
 app.include_router(historial.router, prefix="/api")
