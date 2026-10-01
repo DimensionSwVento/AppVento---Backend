@@ -5,7 +5,9 @@ import uuid
 from datetime import datetime, timezone
 from typing import Optional
 
-from sqlalchemy import Boolean, DateTime, Float, ForeignKey, Integer, String
+from sqlalchemy import (
+    BigInteger, Boolean, DateTime, Float, ForeignKey, Integer, String, TypeDecorator,
+)
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -18,6 +20,35 @@ def _uuid() -> str:
 
 def _now() -> datetime:
     return datetime.now(timezone.utc)
+
+
+class H3Index(TypeDecorator):
+    """PK de celda H3: se ALMACENA como ``BIGINT`` (el entero nativo de 64 bits del
+    índice H3) y se EXPONE a la app como el token hex en ``str`` — que es lo que
+    usan h3-js, el front y toda la capa de dominio/servicios/API. Así el cambio de
+    tipo vive SOLO en la BD: el contrato externo no cambia.
+
+    El token H3 es la representación hexadecimal del entero, así que ``int(s, 16)``
+    y ``format(i, "x")`` son inversos exactos (el bit alto reservado es 0 → entra
+    en BIGINT con signo sin desbordar). Cualquier acceso por ORM/Core (``.in_()``,
+    ``==``, ``select(col)``, ``insert().values``, ``bulk_insert_mappings``,
+    ``db.get``) convierte solo; únicamente el SQL crudo (COPY, blue-green) convierte
+    a mano."""
+
+    impl = BigInteger
+    cache_ok = True
+
+    def process_bind_param(self, value, dialect):
+        if value is None:
+            return None
+        if isinstance(value, int):
+            return value
+        return int(str(value), 16)
+
+    def process_result_value(self, value, dialect):
+        if value is None:
+            return None
+        return format(int(value), "x")
 
 
 class AppUser(Base):
@@ -105,7 +136,8 @@ class Hexagon(Base):
     """
     __tablename__ = "hexagon"
 
-    h3_index: Mapped[str] = mapped_column(String, primary_key=True)
+    # PK = índice H3 almacenado como BIGINT (ver H3Index); la app lo ve como str hex.
+    h3_index: Mapped[str] = mapped_column(H3Index, primary_key=True)
     score_general: Mapped[float] = mapped_column(Float, default=0.0)
     tipo_celda: Mapped[str] = mapped_column(String, default="disponible")
     # lat/lng se calculan del h3_index EN LA INGESTA y se persisten: permiten las
@@ -299,7 +331,7 @@ class HexagonVariablesPon(Base):
     """
     __tablename__ = "hexagon_variables_pon"
 
-    h3_index: Mapped[str] = mapped_column(String, primary_key=True)
+    h3_index: Mapped[str] = mapped_column(H3Index, primary_key=True)
     variables_pon: Mapped[dict] = mapped_column(JSONB, default=dict)
 
 

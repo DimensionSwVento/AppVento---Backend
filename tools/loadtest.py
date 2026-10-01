@@ -251,12 +251,14 @@ def _ep_sql(name: str, codes: list[str], hexes: list[str]) -> tuple[str, dict] |
                 {"s": b["south"], "n": b["north"], "w": b["west"], "e": b["east"]})
     if name.endswith("/variables"):  # tabla meta diminuta (debería ser barato)
         return "SELECT variable, vmin, vmax FROM hexagon_meta", {}
+    # h3_index es BIGINT en la BD; las muestras llegan como token hex desde la API
+    # → se convierten a int para comparar contra la PK.
     if "detail" in name and hexes:  # lookup por PK
         return (f"SELECT {_HEX_COLS} FROM hexagon WHERE h3_index = %(h)s",
-                {"h": hexes[0]})
+                {"h": int(hexes[0], 16)})
     if "area" in name and hexes:  # IN sobre PK
         return (f"SELECT {_HEX_COLS} FROM hexagon WHERE h3_index = ANY(%(hs)s)",
-                {"hs": hexes[: min(len(hexes), 300)]})
+                {"hs": [int(x, 16) for x in hexes[: min(len(hexes), 300)]]})
     if "excluded" in name:  # scan completo SIN índice (tipo_celda / score_general)
         return ("SELECT h3_index FROM hexagon "
                 "WHERE tipo_celda = 'excluida' OR score_general < 0", {})

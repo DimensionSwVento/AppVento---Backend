@@ -137,11 +137,13 @@ def copy_ingest(
     with raw.cursor() as cur:
         cur.execute("TRUNCATE TABLE hexagon")
         with cur.copy(f"COPY hexagon ({', '.join(_COPY_COLS)}) FROM STDIN") as cp:
-            cp.set_types(["text", "float8", "text", "float8", "float8", "jsonb", "timestamptz"])
+            # h3_index va como int8 (BIGINT): es el entero nativo del índice H3.
+            # El COPY no pasa por el ORM, así que convertimos el token hex a mano.
+            cp.set_types(["int8", "float8", "text", "float8", "float8", "jsonb", "timestamptz"])
             for h in hexagons:
                 variables = h.get("variables") or {}
                 cp.write_row((
-                    str(h["h3_index"]),
+                    int(str(h["h3_index"]), 16),
                     float(h.get("score_general") or 0.0),
                     str(h.get("tipo_celda") or "disponible"),
                     h.get("lat"),
@@ -382,11 +384,15 @@ def blue_green_replace(
 
 
 def _pg_row(row: dict) -> dict:
-    """Adapta un `_to_row` para el INSERT textual: dicts JSONB → Jsonb()."""
+    """Adapta un `_to_row` para el INSERT textual: dicts JSONB → Jsonb() y el
+    token hex de `h3_index` → int (la columna es BIGINT; el INSERT por `text()` no
+    pasa por el ORM, así que convertimos a mano)."""
     out = dict(row)
     for k in ("variables", "scores"):
         if k in out and out[k] is not None:
             out[k] = Jsonb(out[k])
+    if out.get("h3_index") is not None and not isinstance(out["h3_index"], int):
+        out["h3_index"] = int(str(out["h3_index"]), 16)
     return out
 
 
