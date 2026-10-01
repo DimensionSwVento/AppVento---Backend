@@ -13,16 +13,27 @@ Salidas:
 RAM del server EN VIVO: sondea GET /api/_debug/stats (requiere DEBUG_INFLIGHT=1).
 NO crea usuarios fantasma: reutiliza UN token/cookie real (tu sesión).
 
+DIAGNÓSTICO BD (opcional, `--db-url`): aísla si rompió la QUERY o la APP.
+  - En cada endpoint que ROMPE corre `EXPLAIN (ANALYZE, BUFFERS)` de SU consulta
+    real, SIN carga → si la query sola ya es lenta (Seq Scan / lee disco) el cuello
+    es la BD; si la query sola es rápida, el cuello es la app/concurrencia.
+  - El timeline suma salud de la BD (conexiones activas/en espera, cache-hit%,
+    temp spill) → ver si la BD se satura durante la carga.
+  - ⚠ Córrelo DESDE el server (o por túnel SSH): el 5432 no suele estar público.
+    El swap del HOST de la BD: si la BD está en el MISMO server que la app, el
+    'swap' del timeline (de /_debug/stats) YA lo incluye; si es server aparte,
+    mira cache-hit% y temp_mb como proxy de presión de RAM.
+
 Uso:
   python tools/loadtest.py --base "https://TU_DOMINIO" --cookie "__Secure-authjs.session-token=..."
-  python tools/loadtest.py --base http://localhost:8000 --token "<JWT>"
-Requiere: requests  (pip install requests)
+  python tools/loadtest.py --base http://localhost:8000 --token "<JWT>" \
+      --db-url "postgresql://USUARIO:CLAVE@HOST_BD:5432/NOMBRE_BD"
+Requiere: requests  (pip install requests) · BD: psycopg o psycopg2 (opcional)
 """
 from __future__ import annotations
 import argparse
 import csv
 import random
-import subprocess
 import threading
 import time
 
@@ -161,15 +172,20 @@ def _monitor(base: str, stop: threading.Event, interval: int = 2) -> None:
         lat = sorted(e[2] for e in recent)
         p95 = lat[int(len(lat) * 0.95)] if lat else 0
         st = _poll_stats(base)
+        db = _db_health()
         row = {"t": round(_now(), 1), "active": active, "rps": rps, "p95_ms": round(p95),
                "sys_used_mb": st.get("sys_used_mb", "-"), "sys_avail_mb": st.get("sys_avail_mb", "-"),
                "swap_used_mb": st.get("swap_used_mb", "-"), "inflight": st.get("inflight", "-"),
-               "worker_rss_mb": st.get("worker_rss_mb", "-")}
+               "worker_rss_mb": st.get("worker_rss_mb", "-"),
+               "db_active": db.get("db_active", "-"), "db_wait": db.get("db_wait", "-"),
+               "db_conn": db.get("db_conn", "-"), "db_hit": db.get("db_hit", "-"),
+               "db_temp_mb": db.get("db_temp_mb", "-")}
         with _lock:
             _timeline.append(row)
         print(f"    t={row['t']:>6}s activos={active:>4} rps={rps:>7} p95={row['p95_ms']:>6}ms "
               f"RAMus={row['sys_used_mb']}MB disp={row['sys_avail_mb']}MB "
-              f"swap={row['swap_used_mb']} inflight={row['inflight']} rssWk={row['worker_rss_mb']}",
+              f"swap={row['swap_used_mb']} inflight={row['inflight']} rssWk={row['worker_rss_mb']} "
+              f"| BDact={row['db_active']} BDwait={row['db_wait']} hit={row['db_hit']}% temp={row['db_temp_mb']}MB",
               flush=True)
 
 
@@ -217,6 +233,125 @@ def _bootstrap(base: str) -> tuple[list[str], list[str]]:
     return codes, hexes
 
 
+# ── Diagnóstico BD (opcional) ────────────────────────────────────────────────────
+# Mapa endpoint → la consulta SQL REAL que ejecuta (espejo del repositorio
+# infrastructure/db/hexagon_query_repository.py). Para cada uno, EXPLAIN ANALYZE
+# aísla el coste de la QUERY del coste de la APP (transferencia + Python).
+_HEX_COLS = "h3_index, score_general, tipo_celda, lat, lng, variables"
+
+def _ep_sql(name: str, codes: list[str], hexes: list[str]) -> tuple[str, dict] | None:
+    """(sql, params) representativo del endpoint, o None si no aplica."""
+    if "warmup" in name:  # el count(*) es el caro (scan completo)
+        return "SELECT count(*) FROM hexagon", {}
+    if "variables-bulk" in name or ("variable" in name and "variables" not in name):
+        b = _rand_bbox()  # scan por bbox (btrees lat/lng sueltos) + JSONB por fila
+        return (f"SELECT {_HEX_COLS} FROM hexagon "
+                "WHERE lat >= %(s)s AND lat <= %(n)s "
+                "AND lng >= %(w)s AND lng <= %(e)s",
+                {"s": b["south"], "n": b["north"], "w": b["west"], "e": b["east"]})
+    if name.endswith("/variables"):  # tabla meta diminuta (debería ser barato)
+        return "SELECT variable, vmin, vmax FROM hexagon_meta", {}
+    if "detail" in name and hexes:  # lookup por PK
+        return (f"SELECT {_HEX_COLS} FROM hexagon WHERE h3_index = %(h)s",
+                {"h": hexes[0]})
+    if "area" in name and hexes:  # IN sobre PK
+        return (f"SELECT {_HEX_COLS} FROM hexagon WHERE h3_index = ANY(%(hs)s)",
+                {"hs": hexes[: min(len(hexes), 300)]})
+    if "excluded" in name:  # scan completo SIN índice (tipo_celda / score_general)
+        return ("SELECT h3_index FROM hexagon "
+                "WHERE tipo_celda = 'excluida' OR score_general < 0", {})
+    return None
+
+
+def _db_connect(db_url: str):
+    """(conn, driver) con psycopg(v3) o psycopg2, o (None, None) si falta/err."""
+    try:
+        import psycopg  # noqa: PLC0415  (v3)
+        return psycopg.connect(db_url, connect_timeout=10), "psycopg"
+    except ImportError:
+        pass
+    except Exception as e:  # noqa: BLE001
+        print(f"  !! BD psycopg no conecta: {type(e).__name__}: {e}", flush=True)
+        return None, None
+    try:
+        import psycopg2  # noqa: PLC0415
+        return psycopg2.connect(db_url, connect_timeout=10), "psycopg2"
+    except ImportError:
+        print("  !! --db-url dado pero falta driver: pip install psycopg (o psycopg2)", flush=True)
+    except Exception as e:  # noqa: BLE001
+        print(f"  !! BD psycopg2 no conecta: {type(e).__name__}: {e}", flush=True)
+    return None, None
+
+
+def _db_explain(db_url: str, name: str, codes: list[str], hexes: list[str]) -> dict:
+    """EXPLAIN (ANALYZE, BUFFERS) de la consulta del endpoint, SIN carga.
+    Devuelve {ms, seq_scan, disk_blocks, plan} o {error}."""
+    spec = _ep_sql(name, codes, hexes)
+    if spec is None:
+        return {"error": "sin SQL representativo"}
+    sql, params = spec
+    conn, _drv = _db_connect(db_url)
+    if conn is None:
+        return {"error": "sin conexión BD"}
+    try:
+        cur = conn.cursor()
+        cur.execute("EXPLAIN (ANALYZE, BUFFERS, TIMING, FORMAT TEXT) " + sql, params)
+        plan = "\n".join(str(r[0]) for r in cur.fetchall())
+        cur.close()
+        conn.rollback()
+    except Exception as e:  # noqa: BLE001
+        try:
+            conn.close()
+        except Exception:  # noqa: BLE001
+            pass
+        return {"error": f"{type(e).__name__}: {e}"}
+    try:
+        conn.close()
+    except Exception:  # noqa: BLE001
+        pass
+    import re  # noqa: PLC0415
+    m = re.search(r"Execution Time:\s*([\d.]+)\s*ms", plan)
+    ms = float(m.group(1)) if m else None
+    disk = sum(int(x) for x in re.findall(r"shared read=(\d+)", plan))
+    return {"ms": ms, "seq_scan": "Seq Scan" in plan, "disk_blocks": disk, "plan": plan}
+
+
+_DB_URL: str = ""
+_db_mon_conn = None  # conexión persistente del monitor (salud BD en el timeline)
+
+
+def _db_health() -> dict:
+    """Snapshot ligero de salud de la BD (para el timeline). '-' si no hay conn."""
+    global _db_mon_conn
+    if not _DB_URL:
+        return {}
+    if _db_mon_conn is None:
+        _db_mon_conn, _ = _db_connect(_DB_URL)
+        if _db_mon_conn is None:
+            return {}
+    q = ("SELECT "
+         "(SELECT count(*) FROM pg_stat_activity), "
+         "(SELECT count(*) FROM pg_stat_activity WHERE state='active'), "
+         "(SELECT count(*) FROM pg_stat_activity WHERE wait_event_type IS NOT NULL AND state='active'), "
+         "(SELECT round(100.0*sum(blks_hit)/nullif(sum(blks_hit)+sum(blks_read),0),1) FROM pg_stat_database), "
+         "(SELECT round(coalesce(sum(temp_bytes),0)/1048576.0,1) FROM pg_stat_database)")
+    try:
+        cur = _db_mon_conn.cursor()
+        cur.execute(q)
+        c, a, w, hit, temp = cur.fetchone()
+        cur.close()
+        _db_mon_conn.rollback()
+        return {"db_conn": c, "db_active": a, "db_wait": w,
+                "db_hit": hit if hit is not None else "-", "db_temp_mb": temp}
+    except Exception:  # noqa: BLE001
+        try:
+            _db_mon_conn.close()
+        except Exception:  # noqa: BLE001
+            pass
+        _db_mon_conn = None
+        return {}
+
+
 def _run_endpoint(name, probe, base, codes, hexes, stages, stage_secs,
                   break_err, break_p95) -> tuple[list[dict], int | None]:
     rows: list[dict] = []
@@ -250,7 +385,16 @@ def _run_endpoint(name, probe, base, codes, hexes, stages, stage_secs,
         if broke:
             limit = users
             break  # hallado el límite de ESTE endpoint → siguiente
-    return rows, limit
+    diag: dict = {}
+    if _DB_URL:
+        # EXPLAIN ANALYZE SIN carga: coste puro de la QUERY (aísla BD vs app).
+        diag = _db_explain(_DB_URL, name, codes, hexes)
+        if "error" in diag:
+            print(f"  BD: {diag['error']}", flush=True)
+        else:
+            print(f"  BD query sola: {diag['ms']}ms  SeqScan={diag['seq_scan']}  "
+                  f"disco={diag['disk_blocks']} bloques", flush=True)
+    return rows, limit, diag
 
 
 def _write_report(out_txt: str, cfg: list[str], per_ep: dict) -> None:
@@ -261,7 +405,7 @@ def _write_report(out_txt: str, cfg: list[str], per_ep: dict) -> None:
         with _lock:
             w.writerows(sorted(_events, key=lambda e: e[0]))
     lines = list(cfg)
-    for name, (rows, limit) in per_ep.items():
+    for name, (rows, limit, _diag) in per_ep.items():
         lines.append(f"\n## {name}")
         lines.append(f"{'users':>6} {'req':>7} {'err%':>6} {'p50':>7} {'p95':>7} {'rps':>7}")
         for r in rows:
@@ -269,15 +413,50 @@ def _write_report(out_txt: str, cfg: list[str], per_ep: dict) -> None:
                          f"{r['p95']:>7} {r['rps']:>7}{'  ⚠' if r['broke'] else ''}")
         lines.append(f"  → LÍMITE: {('ROMPIÓ en ' + str(limit)) if limit else 'estable hasta ' + str(rows[-1]['users']) if rows else 's/d'}")
     lines.append("\n## Resumen de LÍMITES por endpoint")
-    for name, (rows, limit) in per_ep.items():
+    for name, (rows, limit, _diag) in per_ep.items():
         lines.append(f"  {name:<28} → {('ROMPIÓ en ' + str(limit)) if limit else 'estable hasta ' + str(rows[-1]['users']) if rows else 's/d'}")
-    lines.append("\n## Timeline RAM (cada 2s; '-' si falta DEBUG_INFLIGHT=1)")
+
+    # ── Veredicto BD vs APP (si se pasó --db-url) ──────────────────────────────
+    has_db = any("plan" in d or "error" in d for _n, (_r, _l, d) in per_ep.items() if d)
+    if has_db:
+        lines.append("\n## Diagnóstico BD — ¿rompió la QUERY o la APP?")
+        lines.append("  (EXPLAIN ANALYZE de la consulta real, SIN carga = coste puro de la BD)")
+        for name, (rows, limit, d) in per_ep.items():
+            if not d:
+                continue
+            if "error" in d:
+                lines.append(f"  {name:<28} → BD n/d ({d['error']})")
+                continue
+            ms = d.get("ms")
+            slow = (ms is not None and ms >= 1000) or d.get("seq_scan")
+            # query lenta sola → cuello BD; query rápida pero endpoint rompió → cuello APP
+            if slow:
+                verd = "CUELLO = BD (la query sola ya es lenta)"
+            elif limit:
+                verd = "CUELLO = APP/concurrencia (la query sola es rápida)"
+            else:
+                verd = "ok"
+            lines.append(f"  {name:<28} → query sola {ms}ms · SeqScan={d.get('seq_scan')} · "
+                         f"disco={d.get('disk_blocks')}bloq → {verd}")
+        lines.append("\n## Planes EXPLAIN (detalle)")
+        for name, (rows, limit, d) in per_ep.items():
+            if d and "plan" in d:
+                lines.append(f"\n--- {name} ---")
+                lines.append(d["plan"])
+        lines.append("\n# swap del HOST de la BD: si la BD comparte server con la app, el 'swap'")
+        lines.append("# del timeline (de /_debug/stats) YA lo incluye. Si es server aparte, usa")
+        lines.append("# hit% (cache) y temp(MB) del timeline como proxy de presión de RAM en la BD.")
+
+    lines.append("\n## Timeline RAM+BD (cada 2s; '-' si falta DEBUG_INFLIGHT=1 / --db-url)")
     lines.append(f"{'t(s)':>6} {'activos':>7} {'rps':>7} {'p95ms':>6} {'RAMus':>6} "
-                 f"{'disp':>6} {'swap':>5} {'inflight':>8} {'rssWk':>6}")
+                 f"{'disp':>6} {'swap':>5} {'inflight':>8} {'rssWk':>6} "
+                 f"{'BDact':>6} {'BDwait':>6} {'BDconn':>6} {'hit%':>5} {'tempMB':>6}")
     for r in _timeline:
         lines.append(f"{r['t']:>6} {r['active']:>7} {r['rps']:>7} {r['p95_ms']:>6} "
                      f"{r['sys_used_mb']:>6} {r['sys_avail_mb']:>6} {r['swap_used_mb']:>5} "
-                     f"{r['inflight']:>8} {r['worker_rss_mb']:>6}")
+                     f"{r['inflight']:>8} {r['worker_rss_mb']:>6} "
+                     f"{r.get('db_active','-'):>6} {r.get('db_wait','-'):>6} "
+                     f"{r.get('db_conn','-'):>6} {r.get('db_hit','-'):>5} {r.get('db_temp_mb','-'):>6}")
     with open(out_txt, "w", encoding="utf-8") as f:
         f.write("\n".join(lines) + "\n")
     print(f"\nReportes: {out_txt} · {base}-requests.csv", flush=True)
@@ -287,11 +466,14 @@ _HEADERS: dict = {}
 
 
 def main() -> None:
-    global _t0, _TIMEOUT, _HEADERS
+    global _t0, _TIMEOUT, _HEADERS, _DB_URL
     ap = argparse.ArgumentParser()
     ap.add_argument("--base", required=True)
     ap.add_argument("--token")
     ap.add_argument("--cookie")
+    ap.add_argument("--db-url", default="",
+                    help="DSN Postgres (opcional) para EXPLAIN+salud BD. "
+                         "Ej: postgresql://USUARIO:CLAVE@HOST_BD:5432/NOMBRE_BD")
     ap.add_argument("--stages", default="10,25,50,100,200,400,700,1000")
     ap.add_argument("--stage-secs", type=int, default=15)
     ap.add_argument("--break-err", type=float, default=25.0)
@@ -303,6 +485,7 @@ def main() -> None:
     args = ap.parse_args()
 
     _TIMEOUT = args.req_timeout
+    _DB_URL = args.db_url or ""
     if args.token:
         _HEADERS["Authorization"] = f"Bearer {args.token}"
     if args.cookie:
@@ -318,6 +501,7 @@ def main() -> None:
         f"# auth: {'token' if args.token else 'cookie' if args.cookie else 'NINGUNO'} · "
         f"codes={len(codes)} hexes-muestra={len(hexes)}",
         f"# rampa: {stages} · {args.stage_secs}s/etapa · corte err>{args.break_err}% o p95>{args.break_p95:.0f}ms",
+        f"# diagnóstico BD: {'ON (EXPLAIN + salud BD)' if _DB_URL else 'OFF (pasa --db-url para activarlo)'}",
     ]
     for c in cfg:
         print(c, flush=True)
@@ -342,6 +526,11 @@ def main() -> None:
 
     mon_stop.set()
     time.sleep(0.2)
+    if _db_mon_conn is not None:
+        try:
+            _db_mon_conn.close()
+        except Exception:  # noqa: BLE001
+            pass
     _write_report(args.out, cfg, per_ep)
 
 
