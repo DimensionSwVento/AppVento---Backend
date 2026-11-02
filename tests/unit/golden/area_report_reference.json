@@ -1,0 +1,53 @@
+{
+  "description": "Reference data for the multicriteria (WLC/AHP) area report. Inputs are a fixed fixture of three res-8 hexes; every expected value was derived BY HAND from the formula documented in infrastructure/data/model_weights.py (score_dim = sum(w_var * norm) / sum(w_var); index = sum(w_dim * score_dim) / sum(w_dim); norm = clamp((v - min) / (max - min)); master global in 1-5 scale normalised as (raw - 1) / 4; raw < 0 marks an excluded zone and falls back to the computed index). The derivation of each number is written next to it in 'derivation'. Never regenerate these values by calling the code under test.",
+  "fixture": {
+    "ranges": {
+      "TEC_001": {"min": 3.0, "max": 12.0},
+      "TEC_004": {"min": 0.0, "max": 600.0},
+      "AMB_005": {"min": 1.0, "max": 5.0},
+      "SOC_010": {"min": 0.0, "max": 100.0}
+    },
+    "hexes": [
+      {"key": "A", "lat": 4.71, "lng": -74.07, "global": 4.2,
+       "variables": {"TEC_001": 7.5, "TEC_004": 450.0, "AMB_005": 4.0, "SOC_010": 20.0}},
+      {"key": "B", "lat": 6.24, "lng": -75.58, "global": -1.0,
+       "variables": {"TEC_001": 12.0, "TEC_004": 150.0, "AMB_005": 2.0, "SOC_010": null}},
+      {"key": "C", "lat": 3.45, "lng": -76.53, "global": 1.0,
+       "variables": {"TEC_001": 1.5, "TEC_004": 600.0, "AMB_005": "3.0", "SOC_010": 100.0}}
+    ]
+  },
+  "cases": [
+    {
+      "id": "placeholder-weights",
+      "note": "The weights currently shipped in model_weights.py (empty tables: every weight defaults to 1.0, i.e. a plain mean). If the real AHP weights land, this case must be re-derived by hand.",
+      "variableWeights": {},
+      "dimensionWeights": {},
+      "expected": {
+        "A": {"scores": {"TEC": 0.625, "AMB": 0.75, "SOC": 0.2}, "score_general": 0.8, "tipo_celda": "disponible"},
+        "B": {"scores": {"TEC": 0.625, "AMB": 0.25}, "score_general": 0.4375, "tipo_celda": "excluida"},
+        "C": {"scores": {"TEC": 0.5, "AMB": 0.5, "SOC": 1.0}, "score_general": 0.0, "tipo_celda": "disponible"}
+      },
+      "derivation": {
+        "A": "TEC_001 (7.5-3)/9=0.5, TEC_004 450/600=0.75 -> TEC (0.5+0.75)/2=0.625; AMB_005 (4-1)/4=0.75; SOC_010 20/100=0.2; global (4.2-1)/4=0.8",
+        "B": "TEC_001 (12-3)/9=1.0, TEC_004 150/600=0.25 -> TEC 0.625; AMB_005 (2-1)/4=0.25; SOC_010 null -> no SOC score; global -1 = excluded -> index (0.625+0.25)/2=0.4375",
+        "C": "TEC_001 (1.5-3)/9 clamps to 0.0, TEC_004 600/600=1.0 -> TEC 0.5; AMB_005 '3.0' -> (3-1)/4=0.5; SOC_010 100/100=1.0; global (1-1)/4=0.0"
+      }
+    },
+    {
+      "id": "ahp-weights",
+      "note": "Explicit AHP-style weights, to check that the weighted formula (not a plain mean) is applied at both levels.",
+      "variableWeights": {"TEC_001": 3.0, "TEC_004": 1.0, "AMB_005": 1.0, "SOC_010": 1.0},
+      "dimensionWeights": {"TEC": 0.5, "AMB": 0.3, "SOC": 0.2},
+      "expected": {
+        "A": {"scores": {"TEC": 0.5625, "AMB": 0.75, "SOC": 0.2}, "score_general": 0.8, "tipo_celda": "disponible"},
+        "B": {"scores": {"TEC": 0.8125, "AMB": 0.25}, "score_general": 0.6016, "tipo_celda": "excluida"},
+        "C": {"scores": {"TEC": 0.25, "AMB": 0.5, "SOC": 1.0}, "score_general": 0.0, "tipo_celda": "disponible"}
+      },
+      "derivation": {
+        "A": "TEC (3*0.5 + 1*0.75)/4 = 2.25/4 = 0.5625; AMB 0.75; SOC 0.2; global 0.8 (master global wins over the computed index)",
+        "B": "TEC (3*1.0 + 1*0.25)/4 = 0.8125; AMB 0.25; excluded -> index (0.5*0.8125 + 0.3*0.25)/(0.5+0.3) = 0.48125/0.8 = 0.6015625 -> 4 decimals 0.6016",
+        "C": "TEC (3*0.0 + 1*1.0)/4 = 0.25; AMB 0.5; SOC 1.0; global 0.0"
+      }
+    }
+  ]
+}
