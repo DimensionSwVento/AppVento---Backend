@@ -153,12 +153,25 @@ def metrics(run: dict) -> dict:
                      "seconds": round((completed - started).total_seconds(), 1)})
     if not jobs:
         raise ValueError(f"run {run.get('databaseId')} has no completed jobs")
+    steps = []
+    for j in run.get("jobs", []):
+        for s in j.get("steps") or []:
+            if s.get("startedAt") and s.get("completedAt"):
+                steps.append((parse_ts(s["startedAt"]), parse_ts(s["completedAt"])))
     first = min(parse_ts(j["startedAt"]) for j in jobs)
     last = max(parse_ts(j["completedAt"]) for j in jobs)
+    # Step-level "active" time excludes the runner teardown between the last
+    # step and the job's completedAt (log upload, cleanup), which is unrelated
+    # to the verification layer and can add tens of seconds of variance.
+    last_step = max((e for _, e in steps), default=last)
+    first_step = min((s for s, _ in steps), default=first)
     return {
         "queueSeconds": round((first - created).total_seconds(), 1),
         "executionSeconds": round((last - first).total_seconds(), 1),
         "wallSeconds": round((last - created).total_seconds(), 1),
+        "activeWallSeconds": round((last_step - created).total_seconds(), 1),
+        "activeExecutionSeconds": round((last_step - first_step).total_seconds(), 1),
+        "teardownSeconds": round((last - last_step).total_seconds(), 1),
         "computeMinutes": round(sum(j["seconds"] for j in jobs) / 60, 2),
         "jobs": jobs,
     }
@@ -196,10 +209,12 @@ def cmd_collect(args: argparse.Namespace) -> int:
     for condition in ("B", "P"):
         subset = [r for r in rows if r["condition"] == condition]
         aggregates[condition] = {k: aggregate(subset, k)
-                                 for k in ("wallSeconds", "executionSeconds",
-                                           "queueSeconds", "computeMinutes")}
+                                 for k in ("wallSeconds", "executionSeconds", "queueSeconds",
+                                           "activeWallSeconds", "activeExecutionSeconds",
+                                           "teardownSeconds", "computeMinutes")}
     ratio = {}
-    for key in ("wallSeconds", "executionSeconds", "computeMinutes"):
+    for key in ("wallSeconds", "executionSeconds", "computeMinutes",
+                "activeWallSeconds", "activeExecutionSeconds"):
         b = aggregates["B"][key]["median"]
         p = aggregates["P"][key]["median"]
         ratio[key] = round(p / b, 2) if b else None
@@ -246,8 +261,13 @@ def cmd_collect(args: argparse.Namespace) -> int:
             f"{ra['wallSeconds']:.2f}× |",
             f"| execution (s) | {a['B']['executionSeconds']['median']:.1f} | "
             f"{a['P']['executionSeconds']['median']:.1f} | {ra['executionSeconds']:.2f}× |",
+            f"| active wall, excluding runner teardown (s) | "
+            f"{a['B']['activeWallSeconds']['median']:.1f} | "
+            f"{a['P']['activeWallSeconds']['median']:.1f} | {ra['activeWallSeconds']:.2f}× |",
             f"| queue (s) | {a['B']['queueSeconds']['median']:.1f} | "
             f"{a['P']['queueSeconds']['median']:.1f} | — |",
+            f"| teardown (s) | {a['B']['teardownSeconds']['median']:.1f} | "
+            f"{a['P']['teardownSeconds']['median']:.1f} | — |",
             f"| compute (min) | {a['B']['computeMinutes']['median']:.2f} | "
             f"{a['P']['computeMinutes']['median']:.2f} | {ra['computeMinutes']:.2f}× |",
         ]
