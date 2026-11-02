@@ -121,7 +121,7 @@ def get_variable_layer(
     )
 
 
-@router.post("/variables-bulk", dependencies=_auth)
+@router.post("/variables-bulk", dependencies=_auth, status_code=201)
 def get_variable_layers(
     payload: dict = Body(...),
     source: HexagonSource = Depends(get_hexagon_source),
