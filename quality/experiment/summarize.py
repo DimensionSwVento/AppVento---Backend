@@ -37,7 +37,9 @@ def main(argv: list[str] | None = None) -> int:
     rows.sort(key=lambda r: (order.get(r["defect"]["family"], 9), r["defect"]["id"]))
 
     lines = [START, "", "## Backend (RQ2)", "",
-             f"Research commit `{cb['researchCommit'][:12]}` (`research/quality-pipeline-v2`), "
+             f"Research commit `{cb['researchCommit'][:12]}` (`research/quality-pipeline-v2`) for the clean runs"
+             + (f"; defects ran at {', '.join(sorted({'`' + r['researchCommit'][:12] + '`' for r in rows}))}"
+                " (differences limited to quality/experiment/)" if rows else "") + ", "
              f"baseline tests from `origin/develop` `{cb['developCommit'][:12]}`; "
              f"clean runs {len(cb['runs'])}× per condition; generated {rows[-1]['date'] if rows else ''}.", "",
              "Clean state: B "
