@@ -1,0 +1,2 @@
+# Raw per-gate outputs (junit XML, logs, coverage data) live only on the runner.
+evidence/raw/

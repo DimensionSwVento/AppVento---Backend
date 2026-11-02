@@ -1,0 +1,241 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://github.com/DimensionSwVento/AppVento---Backend/quality/gates.schema.json",
+  "title": "Quality Gates Inventory",
+  "description": "Schema for the inventory of quality gates of the backend. Same contract as the frontend gates.schema.json, extended with the 'pytest' source kind (gates select tests by quality-attribute marker) and the top-level 'pytest' object. Cross-references against the catalog are checked by quality/scripts/collect_evidence.py --validate-only.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "gatesVersion",
+    "coveragePolicy",
+    "gates"
+  ],
+  "properties": {
+    "$schema": {
+      "type": "string"
+    },
+    "gatesVersion": {
+      "type": "string",
+      "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$"
+    },
+    "description": {
+      "type": "string",
+      "minLength": 1
+    },
+    "coveragePolicy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "strongCoverageMinRatio"
+      ],
+      "properties": {
+        "strongCoverageMinRatio": {
+          "type": "number",
+          "description": "Fraction of an attribute's catalog tests that its gates must implement for the attribute to count as covered rather than weakly covered.",
+          "exclusiveMinimum": 0,
+          "maximum": 1
+        },
+        "note": {
+          "type": "string"
+        }
+      }
+    },
+    "vitest": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "note": {
+          "type": "string"
+        },
+        "workingDirectory": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "gates": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "$ref": "#/definitions/gate"
+      }
+    },
+    "pytest": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "note": {
+          "type": "string"
+        },
+        "workingDirectory": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    }
+  },
+  "definitions": {
+    "gate": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "name",
+        "attributeId",
+        "description",
+        "source",
+        "catalogTests",
+        "blocking",
+        "enabled"
+      ],
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "Stable machine identifier, used as the gateId in evidence bundles.",
+          "pattern": "^[a-z][a-z0-9]*(-[a-z0-9]+)*$",
+          "minLength": 2,
+          "maxLength": 60
+        },
+        "name": {
+          "type": "string",
+          "minLength": 1
+        },
+        "attributeId": {
+          "type": "string",
+          "description": "The single quality attribute this gate serves. Must be an id present in quality-attributes.json.",
+          "pattern": "^[a-z][a-z0-9]*(-[a-z0-9]+)*$"
+        },
+        "description": {
+          "type": "string",
+          "minLength": 1
+        },
+        "catalogTests": {
+          "type": "array",
+          "description": "Which of the attribute's catalog tests this gate actually implements. May be empty: a gate can guard an attribute without implementing any named catalog test, and recording that honestly is what makes an attribute show up as weakly covered.",
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "blocking": {
+          "type": "boolean",
+          "description": "Whether a failure of this gate blocks deployment."
+        },
+        "enabled": {
+          "type": "boolean"
+        },
+        "source": {
+          "$ref": "#/definitions/source"
+        }
+      }
+    },
+    "source": {
+      "type": "object",
+      "description": "Where this gate's evidence comes from.",
+      "required": [
+        "kind"
+      ],
+      "properties": {
+        "kind": {
+          "type": "string",
+          "enum": [
+            "pytest",
+            "vitest",
+            "playwright",
+            "command",
+            "npm-audit"
+          ]
+        },
+        "include": {
+          "type": "array",
+          "description": "Test file globs (vitest/playwright gates), or optional test paths that restrict a pytest gate.",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "command": {
+          "type": "string",
+          "minLength": 1
+        },
+        "project": {
+          "type": "string",
+          "minLength": 1
+        },
+        "workingDirectory": {
+          "type": "string",
+          "minLength": 1
+        },
+        "requires": {
+          "type": "array",
+          "description": "External prerequisites. A gate whose prerequisites are unavailable is reported as skipped, not failed.",
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "enum": [
+              "keycloak",
+              "docker",
+              "network",
+              "postgres"
+            ]
+          }
+        },
+        "markers": {
+          "type": "string",
+          "minLength": 1,
+          "description": "pytest marker expression (-m) selecting the gate's tests, e.g. 'qa_resilience'. Markers must partition the suite: every test carries exactly one qa_* marker."
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "kind": {
+                "enum": [
+                  "vitest",
+                  "playwright"
+                ]
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "include"
+            ]
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "kind": {
+                "const": "command"
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "command"
+            ]
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "kind": {
+                "const": "pytest"
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "markers"
+            ]
+          }
+        }
+      ]
+    }
+  }
+}

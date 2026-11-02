@@ -1,0 +1,158 @@
+{
+  "$schema": "./gates.schema.json",
+  "gatesVersion": "1.0.0",
+  "description": "Inventory of the quality gates of the Vento backend (FastAPI + PostgreSQL). Every gate declares the single quality attribute it serves and which of that attribute's catalog tests it actually implements. Same contract as the frontend inventory; the coverage inventory and the evidence bundle are derived from this file, never hardcoded.",
+  "coveragePolicy": {
+    "strongCoverageMinRatio": 0.5,
+    "note": "An attribute is 'covered' when it has at least one gate and those gates implement at least strongCoverageMinRatio of the catalog tests declared for it; 'weak' when it has gates but implements less than that; 'uncovered' when no gate declares it."
+  },
+  "pytest": {
+    "note": "pytest gates partition the suite by marker: every test carries exactly one qa_<attribute_id> marker (enforced by tests/conftest.py), so tests per attribute add up without double counting. Integration tests need PostgreSQL (TEST_DATABASE_URL, and DATABASE_URL pointing at the same database).",
+    "workingDirectory": "."
+  },
+  "gates": [
+    {
+      "id": "ruff-lint",
+      "name": "Static analysis (ruff)",
+      "attributeId": "processing",
+      "description": "ruff over the whole backend (syntax errors, undefined names, unused imports) before any test runs, including the geoprocessing modules.",
+      "source": { "kind": "command", "command": "python -m ruff check" },
+      "catalogTests": [],
+      "blocking": true,
+      "enabled": true
+    },
+    {
+      "id": "spatial-processing-tests",
+      "name": "Spatial processing tests",
+      "attributeId": "processing",
+      "description": "H3 geoprocessing: polygon tessellation and resolution expansion, parent aggregation, variable normalisation and resolution, score fallback and zoom mapping, tile and area services; CRS consistency between persisted WGS84 coordinates and Web Mercator tiles served from Postgres; reproducibility of area reports and tile aggregation across runs and input orders.",
+      "source": { "kind": "pytest", "markers": "qa_processing", "requires": ["postgres"] },
+      "catalogTests": [
+        "spatial unit tests (vector/raster)",
+        "CRS consistency tests",
+        "reproducibility tests"
+      ],
+      "blocking": true,
+      "enabled": true
+    },
+    {
+      "id": "data-source-availability-tests",
+      "name": "Spatial data source availability tests",
+      "attributeId": "availability",
+      "description": "Connectivity of the map service to its PostgreSQL source (queries, readiness, warmup, report history), recovery of the service after its database connections are killed server-side, and liveness of /api/health while a master ingest is running.",
+      "source": { "kind": "pytest", "markers": "qa_availability", "requires": ["postgres"] },
+      "catalogTests": [
+        "connectivity tests to data sources",
+        "GIS service recovery tests"
+      ],
+      "blocking": true,
+      "enabled": true
+    },
+    {
+      "id": "bundle-integration-tests",
+      "name": "Multi-source bundle integration tests",
+      "attributeId": "data-integration",
+      "description": "Ingest of the model bundle into PostgreSQL by ORM, COPY and upsert paths: fusion of raw variables, criteria scores and the MCDA index from separate parquet files per hex, per-variable range metadata, column classification against the confirmed registry, reconciliation of parquet codes with catalog master_ids, and semantic consistency of the shipped registry.",
+      "source": { "kind": "pytest", "markers": "qa_data_integration", "requires": ["postgres"] },
+      "catalogTests": [
+        "multi-source integration",
+        "semantic consistency",
+        "metadata validation"
+      ],
+      "blocking": true,
+      "enabled": true
+    },
+    {
+      "id": "reference-result-tests",
+      "name": "Multicriteria result reference tests",
+      "attributeId": "result-quality",
+      "description": "Golden-file validation of the WLC/AHP area report against values derived by hand from the formula in model_weights.py (shipped and explicit AHP weights), unit-interval contract of every score, and topological consistency of the selected hexes (exact children partition, no double counting, polygon containment, contiguity).",
+      "source": { "kind": "pytest", "markers": "qa_result_quality" },
+      "catalogTests": [
+        "validation against reference data",
+        "topological consistency"
+      ],
+      "blocking": true,
+      "enabled": true
+    },
+    {
+      "id": "auth-rbac-tests",
+      "name": "Authentication and RBAC tests",
+      "attributeId": "security",
+      "description": "Keycloak JWT verification and JWKS caching, the dual guard (internal BFF secret or JWT), role-based guards, and rejection of unauthenticated or identity-less requests to the map and report endpoints.",
+      "source": { "kind": "pytest", "markers": "qa_security", "requires": ["postgres"] },
+      "catalogTests": [
+        "layer access control protection",
+        "GIS API security"
+      ],
+      "blocking": true,
+      "enabled": true
+    },
+    {
+      "id": "spatial-data-quality-tests",
+      "name": "Spatial data quality tests",
+      "attributeId": "data-quality",
+      "description": "Territorial completeness of the ingested grid (point-in-Colombia including the San Andrés and Providencia archipelago, rejection of neighbouring capitals and out-of-bounds points, Colombia filter and defaults at parquet ingest) and validation of variable metadata and H3 identifiers.",
+      "source": { "kind": "pytest", "markers": "qa_data_quality" },
+      "catalogTests": [
+        "spatial completeness tests",
+        "metadata validation"
+      ],
+      "blocking": true,
+      "enabled": true
+    },
+    {
+      "id": "api-contract-tests",
+      "name": "API contract and format tests",
+      "attributeId": "interoperability",
+      "description": "OpenAPI 3 validation of /openapi.json and snapshot of the public contract, response shapes of the tile, detail and area endpoints, Web Mercator tile bounds, reading of the H3 parquet exchange format, and the legacy query models.",
+      "source": { "kind": "pytest", "markers": "qa_interoperability", "requires": ["postgres"] },
+      "catalogTests": [
+        "standards and schema validation",
+        "import/export format testing"
+      ],
+      "blocking": true,
+      "enabled": true
+    },
+    {
+      "id": "traceability-tests",
+      "name": "Data versioning and lineage tests",
+      "attributeId": "traceability-auditability",
+      "description": "master_version rows written by the chunked bundle ingest (version, status, source, counts, applied_at) and the current-version rule; data_source lineage of the bundle and catalog documents on success and failure; report stamping with the master version and persistence of the report's version and snapshot across re-ingests.",
+      "source": { "kind": "pytest", "markers": "qa_traceability_auditability", "requires": ["postgres"] },
+      "catalogTests": [
+        "data versioning tests",
+        "spatial data lineage tests",
+        "historical reproducibility of results"
+      ],
+      "blocking": true,
+      "enabled": true
+    },
+    {
+      "id": "fault-injection-tests",
+      "name": "Fault injection and recovery tests",
+      "attributeId": "resilience",
+      "description": "Injected faults on production paths: unreachable database (health degrades fast, data endpoints fail fast, recovery when it returns), missing/corrupt/mid-stream-invalid master parquet on the COPY ingest (previous dataset intact), failed admin master update (recorded as failed, next update accepted), concurrent bundle ingest (advisory lock rejects then accepts) and release of the ingest lock after a failed ingest.",
+      "source": { "kind": "pytest", "markers": "qa_resilience", "requires": ["postgres"] },
+      "catalogTests": [
+        "controlled failure tests (fault injection)",
+        "recovery testing"
+      ],
+      "blocking": true,
+      "enabled": true
+    },
+    {
+      "id": "provenance-license-tests",
+      "name": "Data provenance and license tests",
+      "attributeId": "geoethics",
+      "description": "Variables and regulatory norms ingested from an InfoVariables document are served with their declared source, source URL and license; no variable may be served without source, URL and license.",
+      "source": { "kind": "pytest", "markers": "qa_geoethics", "requires": ["postgres"] },
+      "catalogTests": [
+        "data origin validation",
+        "license validation"
+      ],
+      "blocking": true,
+      "enabled": true
+    }
+  ]
+}
