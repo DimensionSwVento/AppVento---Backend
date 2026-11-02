@@ -1,0 +1,243 @@
+{
+  "$schema": "./quality-attributes.schema.json",
+  "catalogVersion": "1.0.0",
+  "description": "Catalog of quality attributes relevant to GIS software applications in the energy sector. This catalog is the reference model of the testing approach: it specifies, per attribute, the tests required and the evidence expected for the attribute to be considered satisfied. It is consumed by the CI/CD quality pipeline both as a gate specification and as grounding context for the generative analysis stage.",
+  "attributes": [
+    {
+      "id": "processing",
+      "name": "Processing",
+      "description": "System capability to correctly execute GIS operations and workflows",
+      "tests": [
+        "spatial unit tests (vector/raster)",
+        "CRS consistency tests",
+        "geometric precision tests",
+        "reproducibility tests"
+      ],
+      "expectedEvidence": [
+        "valid spatial results",
+        "spatial error within thresholds",
+        "repeatable results"
+      ],
+      "supportingStudies": [17, 21],
+      "criticality": null
+    },
+    {
+      "id": "availability",
+      "name": "Availability",
+      "description": "System capability to access spatial data when required",
+      "tests": [
+        "connectivity tests to data sources",
+        "fault tolerance tests",
+        "GIS service recovery tests"
+      ],
+      "expectedEvidence": [
+        "accessible sources under normal conditions",
+        "controlled failure handling",
+        "service uptime",
+        "response availability rate"
+      ],
+      "supportingStudies": [15, 27],
+      "criticality": null
+    },
+    {
+      "id": "data-integration",
+      "name": "Data Integration",
+      "description": "System capability to combine heterogeneous spatial data coherently",
+      "tests": [
+        "vector-raster compatibility",
+        "multi-source integration",
+        "metadata validation",
+        "semantic consistency"
+      ],
+      "expectedEvidence": [
+        "successful consumption of external services",
+        "data exchanged without semantic loss",
+        "compliance with recognized standards",
+        "transparent integration across platforms"
+      ],
+      "supportingStudies": [15, 16, 18],
+      "criticality": null
+    },
+    {
+      "id": "performance",
+      "name": "Performance",
+      "description": "System capability to respond efficiently when handling spatial data",
+      "tests": [
+        "layer loading time",
+        "map rendering",
+        "spatial query latency"
+      ],
+      "expectedEvidence": [
+        "acceptable response times",
+        "visual fluidity",
+        "stable behavior under large volumes"
+      ],
+      "supportingStudies": [15, 17, 21],
+      "criticality": null
+    },
+    {
+      "id": "result-quality",
+      "name": "Result Quality",
+      "description": "Reliability and quality of GIS outputs for decision-making",
+      "tests": [
+        "validation against reference data",
+        "topological consistency",
+        "uncertainty analysis"
+      ],
+      "expectedEvidence": [
+        "consistent results",
+        "explicit uncertainty"
+      ],
+      "supportingStudies": [14, 16],
+      "criticality": null
+    },
+    {
+      "id": "security",
+      "name": "Security",
+      "description": "Protection of spatial data, services, and decision-making processes",
+      "tests": [
+        "layer access control protection",
+        "GIS API security",
+        "sensitive data",
+        "spatial integrity"
+      ],
+      "expectedEvidence": [
+        "controlled access",
+        "unaltered data",
+        "policy compliance"
+      ],
+      "supportingStudies": [27],
+      "criticality": null
+    },
+    {
+      "id": "data-quality",
+      "name": "Data Quality",
+      "description": "System capability to work with complete, consistent spatial data suitable for the territorial context",
+      "tests": [
+        "positional accuracy tests",
+        "spatial completeness tests",
+        "temporal consistency tests",
+        "metadata validation"
+      ],
+      "expectedEvidence": [
+        "positional errors within defined thresholds",
+        "acceptable spatial coverage percentage",
+        "detection of spatial outliers",
+        "updated and documented data",
+        "complete and coherent metadata"
+      ],
+      "supportingStudies": [16, 18],
+      "criticality": null
+    },
+    {
+      "id": "scalability",
+      "name": "Scalability",
+      "description": "System capability to maintain performance when increasing data volume, resolution, and concurrency",
+      "tests": [
+        "load tests with increasing datasets",
+        "resolution increase tests (raster)",
+        "concurrent user tests",
+        "horizontal/vertical scaling tests"
+      ],
+      "expectedEvidence": [
+        "stable response times",
+        "controlled resource usage",
+        "no functional degradation",
+        "progressive growth capability"
+      ],
+      "supportingStudies": [15, 21],
+      "criticality": null
+    },
+    {
+      "id": "interoperability",
+      "name": "Interoperability",
+      "description": "System capability to exchange and consume GIS data and services in a standardized way",
+      "tests": [
+        "OGC services testing",
+        "import/export format testing",
+        "standards and schema validation",
+        "integration with external systems"
+      ],
+      "expectedEvidence": [
+        "spatially aligned layers",
+        "consistent attributes",
+        "absence of topological errors"
+      ],
+      "supportingStudies": [15, 16],
+      "criticality": null
+    },
+    {
+      "id": "usability-geospatial",
+      "name": "Usability (Geospatial)",
+      "description": "System capability to present spatial information in an understandable, accessible, and cognitively appropriate way",
+      "tests": [
+        "cartographic comprehension tests",
+        "spatial cognitive load tests",
+        "symbology and scale evaluation",
+        "accessibility testing"
+      ],
+      "expectedEvidence": [
+        "users correctly interpret maps",
+        "reduced interpretation errors",
+        "smooth navigation across scales and layers",
+        "interfaces adapted to territorial context"
+      ],
+      "supportingStudies": [5, 14],
+      "criticality": null
+    },
+    {
+      "id": "traceability-auditability",
+      "name": "Traceability and Auditability",
+      "description": "System capability to reconstruct the origin, transformation, and use of spatial data and results",
+      "tests": [
+        "spatial data lineage tests",
+        "data versioning tests",
+        "historical reproducibility of results",
+        "decision flow auditing"
+      ],
+      "expectedEvidence": [
+        "complete history of data and processes",
+        "ability to replicate past results",
+        "identifiable spatial versions",
+        "transparency in territorial decisions"
+      ],
+      "supportingStudies": [14, 18],
+      "criticality": null
+    },
+    {
+      "id": "resilience",
+      "name": "Resilience",
+      "description": "System capability to resist, adapt, and recover from technical failures, data changes, or extreme events",
+      "tests": [
+        "controlled failure tests (fault injection)",
+        "recovery testing",
+        "stress recovery scenarios"
+      ],
+      "expectedEvidence": [
+        "recovery logs",
+        "restoration time (MTTR)",
+        "continuity of partial results",
+        "system recovery success rate"
+      ],
+      "supportingStudies": [13, 27],
+      "criticality": null
+    },
+    {
+      "id": "geoethics",
+      "name": "Geoethics",
+      "description": "Degree to which the GIS system respects ethical principles in the use, representation, and interpretation of geospatial information",
+      "tests": [
+        "data consent and usage tests",
+        "data origin validation",
+        "license validation"
+      ],
+      "expectedEvidence": [
+        "ethical usage declarations",
+        "data catalog",
+        "associated licenses"
+      ],
+      "supportingStudies": [18],
+      "criticality": null
+    }
+  ]
+}

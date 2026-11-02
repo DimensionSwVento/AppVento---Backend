@@ -1,0 +1,95 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://github.com/DimensionSwVento/AppVento/quality/quality-attributes.schema.json",
+  "title": "Quality Attributes Catalog",
+  "description": "Schema for the catalog of quality attributes of GIS software applications in the energy sector. The catalog is the reference model of the testing approach; a malformed catalog must fail CI.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["catalogVersion", "attributes"],
+  "properties": {
+    "$schema": {
+      "type": "string",
+      "description": "Relative pointer to this schema, for editor tooling."
+    },
+    "catalogVersion": {
+      "type": "string",
+      "description": "Semantic version of the catalog. Bump it whenever an attribute, test, or expected evidence changes, so evidence bundles remain traceable to the catalog revision that produced them.",
+      "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$"
+    },
+    "description": {
+      "type": "string",
+      "minLength": 1
+    },
+    "attributes": {
+      "type": "array",
+      "description": "The quality attributes. The approach defines exactly 13; the count is fixed here so that an accidental deletion or duplication fails validation.",
+      "minItems": 13,
+      "maxItems": 13,
+      "items": { "$ref": "#/definitions/attribute" }
+    }
+  },
+  "definitions": {
+    "attribute": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "name",
+        "description",
+        "tests",
+        "expectedEvidence",
+        "supportingStudies",
+        "criticality"
+      ],
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "Stable machine identifier. Gates and analyzer output reference attributes by this id, so it must never change once published.",
+          "pattern": "^[a-z][a-z0-9]*(-[a-z0-9]+)*$",
+          "minLength": 2,
+          "maxLength": 40
+        },
+        "name": {
+          "type": "string",
+          "description": "Human-readable name as it appears in the paper. Kept in English.",
+          "minLength": 1
+        },
+        "description": {
+          "type": "string",
+          "description": "What the attribute means for a GIS application in the energy sector.",
+          "minLength": 1
+        },
+        "tests": {
+          "type": "array",
+          "description": "The tests required to exercise this attribute. The generative analysis stage may only recommend tests drawn from this list.",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": { "type": "string", "minLength": 1 }
+        },
+        "expectedEvidence": {
+          "type": "array",
+          "description": "The evidence expected for the attribute to be considered satisfied.",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": { "type": "string", "minLength": 1 }
+        },
+        "supportingStudies": {
+          "type": "array",
+          "description": "Identifiers of the primary studies that support this attribute in the systematic review.",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "type": "integer",
+            "minimum": 1
+          }
+        },
+        "criticality": {
+          "type": ["integer", "null"],
+          "description": "Relative importance of the attribute for this system, on a 1-5 scale. Null until the team assigns it; the pipeline must not infer it.",
+          "minimum": 1,
+          "maximum": 5
+        }
+      }
+    }
+  }
+}

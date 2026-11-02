@@ -1,0 +1,129 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://github.com/DimensionSwVento/AppVento/quality/evidence-bundle.schema.json",
+  "title": "Quality Evidence Bundle",
+  "description": "One normalized bundle per pipeline run. It is the sole input to the analysis stage and the sole source of the quantitative results reported in the paper, so its shape is a contract: fields may be added, never renamed or removed. The bundle must be valid JSON even when gates fail.",
+  "type": "object",
+  "required": [
+    "runId",
+    "commit",
+    "timestamp",
+    "workflowDurationMs",
+    "gates",
+    "coverage",
+    "audit",
+    "attributeCoverage"
+  ],
+  "properties": {
+    "runId": { "type": "string", "minLength": 1 },
+    "commit": { "type": "string", "minLength": 1 },
+    "timestamp": {
+      "type": "string",
+      "description": "ISO 8601 UTC instant. Matched by pattern rather than by the date-time format so that no ajv format plugin is required.",
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\\.[0-9]+)?Z$"
+    },
+    "workflowDurationMs": { "type": "integer", "minimum": 0 },
+    "catalogVersion": { "type": "string" },
+    "gatesVersion": { "type": "string" },
+    "assertionCountMethod": {
+      "type": "string",
+      "description": "How the `assertions` figure was obtained. 'static-expect-calls' means expect( occurrences counted in the gate's test files, because Vitest does not report per-test expect counts.",
+      "enum": ["static-expect-calls"]
+    },
+    "environment": {
+      "type": "object",
+      "properties": {
+        "ci": { "type": "boolean" },
+        "workflow": { "type": ["string", "null"] },
+        "ref": { "type": ["string", "null"] },
+        "node": { "type": "string" }
+      }
+    },
+    "gates": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": [
+          "gateId",
+          "attributeId",
+          "status",
+          "testsRun",
+          "testsPassed",
+          "assertions",
+          "durationMs",
+          "logExcerpt",
+          "artifacts"
+        ],
+        "properties": {
+          "gateId": { "type": "string", "minLength": 1 },
+          "attributeId": { "type": "string", "minLength": 1 },
+          "blocking": { "type": "boolean" },
+          "status": { "type": "string", "enum": ["passed", "failed", "skipped"] },
+          "testsRun": { "type": "integer", "minimum": 0 },
+          "testsPassed": { "type": "integer", "minimum": 0 },
+          "assertions": { "type": "integer", "minimum": 0 },
+          "durationMs": { "type": "integer", "minimum": 0 },
+          "logExcerpt": { "type": "string" },
+          "artifacts": { "type": "array", "items": { "type": "string" } },
+          "diagnostic": {
+            "description": "Level 1 analyzer output, attached for failed gates. Null or absent otherwise.",
+            "type": ["object", "null"]
+          }
+        }
+      }
+    },
+    "coverage": {
+      "type": "object",
+      "required": ["lines", "branches"],
+      "properties": {
+        "lines": { "type": ["number", "null"], "minimum": 0, "maximum": 100 },
+        "branches": { "type": ["number", "null"], "minimum": 0, "maximum": 100 }
+      }
+    },
+    "audit": {
+      "type": "object",
+      "required": ["critical", "high", "moderate", "low"],
+      "properties": {
+        "critical": { "type": "integer", "minimum": 0 },
+        "high": { "type": "integer", "minimum": 0 },
+        "moderate": { "type": "integer", "minimum": 0 },
+        "low": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "attributeCoverage": {
+      "type": "object",
+      "required": ["covered", "uncovered"],
+      "properties": {
+        "totalAttributes": { "type": "integer", "minimum": 1 },
+        "strongCoverageMinRatio": { "type": "number" },
+        "covered": {
+          "description": "Attributes with at least one enabled gate. Together with `uncovered` this partitions the catalog.",
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "uncovered": { "type": "array", "items": { "type": "string" } },
+        "stronglyCovered": { "type": "array", "items": { "type": "string" } },
+        "weaklyCovered": { "type": "array", "items": { "type": "string" } },
+        "perAttribute": { "type": "array", "items": { "type": "object" } }
+      }
+    },
+    "analysis": {
+      "description": "Level 2 analyzer output. Null until the analysis stage has run.",
+      "type": ["object", "null"]
+    },
+    "deployment": {
+      "description": "Deterministic deployment decision. Absent until the decision stage has run. The generative analysis is not an input to it.",
+      "type": "object",
+      "required": ["decision", "reason", "blockingFailures", "warnings"],
+      "properties": {
+        "decision": { "type": "string", "enum": ["allow", "block"] },
+        "reason": { "type": "string" },
+        "blockingFailures": { "type": "array", "items": { "type": "object" } },
+        "warnings": { "type": "array", "items": { "type": "object" } },
+        "evaluatedAt": { "type": "string" },
+        "rule": { "type": "string" }
+      }
+    }
+  }
+}
