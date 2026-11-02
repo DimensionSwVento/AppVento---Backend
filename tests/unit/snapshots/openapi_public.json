@@ -1,0 +1,404 @@
+{
+  "GET /api/health": {
+    "parameters": [],
+    "requestBody": null,
+    "successCodes": [
+      "200"
+    ],
+    "tags": [
+      "health"
+    ]
+  },
+  "GET /api/historico": {
+    "parameters": [
+      {
+        "name": "X-Internal-Secret",
+        "in": "header",
+        "required": false
+      },
+      {
+        "name": "X-User-Roles",
+        "in": "header",
+        "required": false
+      },
+      {
+        "name": "X-User-Sub",
+        "in": "header",
+        "required": false
+      }
+    ],
+    "requestBody": null,
+    "successCodes": [
+      "200"
+    ],
+    "tags": [
+      "historico"
+    ]
+  },
+  "POST /api/historico": {
+    "parameters": [
+      {
+        "name": "X-Internal-Secret",
+        "in": "header",
+        "required": false
+      },
+      {
+        "name": "X-User-Roles",
+        "in": "header",
+        "required": false
+      },
+      {
+        "name": "X-User-Sub",
+        "in": "header",
+        "required": false
+      }
+    ],
+    "requestBody": {
+      "required": true,
+      "content": [
+        "application/json"
+      ]
+    },
+    "successCodes": [
+      "201"
+    ],
+    "tags": [
+      "historico"
+    ]
+  },
+  "DELETE /api/historico/{informe_id}": {
+    "parameters": [
+      {
+        "name": "X-Internal-Secret",
+        "in": "header",
+        "required": false
+      },
+      {
+        "name": "X-User-Roles",
+        "in": "header",
+        "required": false
+      },
+      {
+        "name": "X-User-Sub",
+        "in": "header",
+        "required": false
+      },
+      {
+        "name": "informe_id",
+        "in": "path",
+        "required": true
+      }
+    ],
+    "requestBody": null,
+    "successCodes": [
+      "204"
+    ],
+    "tags": [
+      "historico"
+    ]
+  },
+  "POST /api/tiles/area": {
+    "parameters": [
+      {
+        "name": "X-Internal-Secret",
+        "in": "header",
+        "required": false
+      },
+      {
+        "name": "X-User-Roles",
+        "in": "header",
+        "required": false
+      },
+      {
+        "name": "X-User-Sub",
+        "in": "header",
+        "required": false
+      }
+    ],
+    "requestBody": {
+      "required": true,
+      "content": [
+        "application/json"
+      ]
+    },
+    "successCodes": [
+      "200"
+    ],
+    "tags": [
+      "tiles"
+    ]
+  },
+  "GET /api/tiles/counts": {
+    "parameters": [
+      {
+        "name": "X-Internal-Secret",
+        "in": "header",
+        "required": false
+      },
+      {
+        "name": "X-User-Roles",
+        "in": "header",
+        "required": false
+      },
+      {
+        "name": "X-User-Sub",
+        "in": "header",
+        "required": false
+      },
+      {
+        "name": "selected",
+        "in": "query",
+        "required": false
+      },
+      {
+        "name": "var",
+        "in": "query",
+        "required": false
+      },
+      {
+        "name": "zoom",
+        "in": "query",
+        "required": false
+      }
+    ],
+    "requestBody": null,
+    "successCodes": [
+      "200"
+    ],
+    "tags": [
+      "tiles"
+    ]
+  },
+  "GET /api/tiles/detail/{h3_index}": {
+    "parameters": [
+      {
+        "name": "X-Internal-Secret",
+        "in": "header",
+        "required": false
+      },
+      {
+        "name": "X-User-Roles",
+        "in": "header",
+        "required": false
+      },
+      {
+        "name": "X-User-Sub",
+        "in": "header",
+        "required": false
+      },
+      {
+        "name": "h3_index",
+        "in": "path",
+        "required": true
+      }
+    ],
+    "requestBody": null,
+    "successCodes": [
+      "200"
+    ],
+    "tags": [
+      "tiles"
+    ]
+  },
+  "GET /api/tiles/excluded": {
+    "parameters": [
+      {
+        "name": "X-Internal-Secret",
+        "in": "header",
+        "required": false
+      },
+      {
+        "name": "X-User-Roles",
+        "in": "header",
+        "required": false
+      },
+      {
+        "name": "X-User-Sub",
+        "in": "header",
+        "required": false
+      }
+    ],
+    "requestBody": null,
+    "successCodes": [
+      "200"
+    ],
+    "tags": [
+      "tiles"
+    ]
+  },
+  "POST /api/tiles/heatmap/area": {
+    "parameters": [
+      {
+        "name": "X-Internal-Secret",
+        "in": "header",
+        "required": false
+      },
+      {
+        "name": "X-User-Roles",
+        "in": "header",
+        "required": false
+      },
+      {
+        "name": "X-User-Sub",
+        "in": "header",
+        "required": false
+      }
+    ],
+    "requestBody": {
+      "required": true,
+      "content": [
+        "application/json"
+      ]
+    },
+    "successCodes": [
+      "200"
+    ],
+    "tags": [
+      "tiles"
+    ]
+  },
+  "POST /api/tiles/variable": {
+    "parameters": [
+      {
+        "name": "X-Internal-Secret",
+        "in": "header",
+        "required": false
+      },
+      {
+        "name": "X-User-Roles",
+        "in": "header",
+        "required": false
+      },
+      {
+        "name": "X-User-Sub",
+        "in": "header",
+        "required": false
+      }
+    ],
+    "requestBody": {
+      "required": true,
+      "content": [
+        "application/json"
+      ]
+    },
+    "successCodes": [
+      "200"
+    ],
+    "tags": [
+      "tiles"
+    ]
+  },
+  "GET /api/tiles/variables": {
+    "parameters": [
+      {
+        "name": "X-Internal-Secret",
+        "in": "header",
+        "required": false
+      },
+      {
+        "name": "X-User-Roles",
+        "in": "header",
+        "required": false
+      },
+      {
+        "name": "X-User-Sub",
+        "in": "header",
+        "required": false
+      }
+    ],
+    "requestBody": null,
+    "successCodes": [
+      "200"
+    ],
+    "tags": [
+      "tiles"
+    ]
+  },
+  "POST /api/tiles/variables-bulk": {
+    "parameters": [
+      {
+        "name": "X-Internal-Secret",
+        "in": "header",
+        "required": false
+      },
+      {
+        "name": "X-User-Roles",
+        "in": "header",
+        "required": false
+      },
+      {
+        "name": "X-User-Sub",
+        "in": "header",
+        "required": false
+      }
+    ],
+    "requestBody": {
+      "required": true,
+      "content": [
+        "application/json"
+      ]
+    },
+    "successCodes": [
+      "200"
+    ],
+    "tags": [
+      "tiles"
+    ]
+  },
+  "GET /api/tiles/warmup": {
+    "parameters": [],
+    "requestBody": null,
+    "successCodes": [
+      "200"
+    ],
+    "tags": [
+      "tiles"
+    ]
+  },
+  "GET /api/tiles/{z}/{x}/{y}": {
+    "parameters": [
+      {
+        "name": "X-Internal-Secret",
+        "in": "header",
+        "required": false
+      },
+      {
+        "name": "X-User-Roles",
+        "in": "header",
+        "required": false
+      },
+      {
+        "name": "X-User-Sub",
+        "in": "header",
+        "required": false
+      },
+      {
+        "name": "x",
+        "in": "path",
+        "required": true
+      },
+      {
+        "name": "y",
+        "in": "path",
+        "required": true
+      },
+      {
+        "name": "z",
+        "in": "path",
+        "required": true
+      },
+      {
+        "name": "var",
+        "in": "query",
+        "required": false
+      }
+    ],
+    "requestBody": null,
+    "successCodes": [
+      "200"
+    ],
+    "tags": [
+      "tiles"
+    ]
+  }
+}
