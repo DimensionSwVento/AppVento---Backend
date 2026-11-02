@@ -74,14 +74,14 @@ def main(argv: list[str] | None = None) -> int:
                 s["ps"].append(p["durationSeconds"])
 
     pct = lambda a, n: f"{a}/{n} ({100 * a / n:.0f}%)" if n else "—"  # noqa: E731
-    lines += ["", "| family | n | B detected | P detected | P attribute match | mean B s | mean P s |",
+    lines += ["", "| family | n | B detected | P detected | P attribute match (of detected) | mean B s | mean P s |",
               "|---|---:|---|---|---|---:|---:|"]
     for fam in ("S", "R", "total"):
         s = stats.get(fam)
         if not s:
             continue
         lines.append(f"| {fam} | {s['n']} | {pct(s['b'], s['n'])} | {pct(s['p'], s['n'])} | "
-                     f"{pct(s['m'], s['n'])} | {mean(s['bs']):.1f} | {mean(s['ps']):.1f} |")
+                     f"{pct(s['m'], s['p'])} | {mean(s['bs']):.1f} | {mean(s['ps']):.1f} |")
     neither = [r["defect"]["id"] for r in rows
                if not r.get("B", {}).get("detection", {}).get("detected")
                and not r.get("P", {}).get("detection", {}).get("detected")]
@@ -91,7 +91,8 @@ def main(argv: list[str] | None = None) -> int:
               "per-test JUnit and the lint/build jobs. B s = sequential sum of the three jobs (in CI they run "
               "in parallel); P s = wall time of collect_evidence.py (all gates sequential + collection count). "
               "D4 (#29) and D9 (#34) are open and covered by strict xfail tests, so they are not in corpus R; "
-              "D2 (#28) is open as well.", "", END]
+              "D2 (#28) is open as well. Attribute match is counted among P detections (m/detected); over all "
+              "defects it is m/n.", "", END]
     block = "\n".join(lines) + "\n"
 
     text = args.summary.read_text() if args.summary.exists() else "# RQ2 — Defect detection results\n\n"
