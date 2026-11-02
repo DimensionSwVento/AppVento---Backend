@@ -50,6 +50,7 @@ def _seed_hexagons(db):
     db.commit()
 
 
+@pytest.mark.qa_availability
 @pytest.mark.postgres
 def test_historial_crud_flow(client):
     resp = client.post("/api/historico", headers=_headers(),
@@ -67,11 +68,13 @@ def test_historial_crud_flow(client):
     assert client.get("/api/historico", headers=_headers()).json() == []
 
 
+@pytest.mark.qa_security
 @pytest.mark.postgres
 def test_historial_requires_auth(client):
     assert client.get("/api/historico").status_code == 401
 
 
+@pytest.mark.qa_availability
 @pytest.mark.postgres
 def test_tiles_with_real_source(client, db):
     _seed_hexagons(db)
@@ -89,6 +92,7 @@ def test_tiles_with_real_source(client, db):
     assert counts.json()["total"] == 1
 
 
+@pytest.mark.qa_availability
 @pytest.mark.postgres
 def test_tiles_area_with_real_source(client, db):
     _seed_hexagons(db)

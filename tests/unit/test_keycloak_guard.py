@@ -15,6 +15,8 @@ from infrastructure.auth import keycloak_guard as kg
 from infrastructure.db import repository
 from shared import config
 
+pytestmark = pytest.mark.qa_security
+
 
 def test_extract_roles_from_realm_access():
     claims = {"realm_access": {"roles": ["admin", "analista"]}}

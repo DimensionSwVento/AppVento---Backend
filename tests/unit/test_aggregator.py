@@ -10,6 +10,8 @@ from domain.query_engine.aggregator import aggregate
 from domain.query_engine.source import HexRow
 from tests.conftest import hexrow
 
+pytestmark = pytest.mark.qa_processing
+
 
 def _row(h3_index, score, variables):
     lat, lng = h3.cell_to_latlng(h3_index)

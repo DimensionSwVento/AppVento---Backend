@@ -56,6 +56,7 @@ def client(monkeypatch):
 
 # ── RNF-1 · Disponibilidad ────────────────────────────────────────────────────
 
+@pytest.mark.qa_availability
 def test_health_returns_ok_when_source_ready(monkeypatch):
     class FakeDb:
         def close(self): ...
@@ -73,6 +74,7 @@ def test_health_returns_ok_when_source_ready(monkeypatch):
     assert resp.json() == {"status": "ok", "index_ready": True}
 
 
+@pytest.mark.qa_availability
 def test_warmup_is_open_and_reports_metadata(client):
     resp = client.get("/api/tiles/warmup")
     assert resp.status_code == 200
@@ -83,10 +85,12 @@ def test_warmup_is_open_and_reports_metadata(client):
 
 # ── RNF-2 · Integración (contrato de la API) ──────────────────────────────────
 
+@pytest.mark.qa_security
 def test_tiles_require_auth(client):
     assert client.get("/api/tiles/variables").status_code == 401
 
 
+@pytest.mark.qa_security
 def test_tiles_accept_internal_secret(client, monkeypatch):
     # 4267442: /variables etiqueta desde `catalog_variable` (BD) vía
     # catalog_service.tile_labels(db) → se sustituye por un catálogo fijo.
@@ -105,12 +109,14 @@ def test_tiles_accept_internal_secret(client, monkeypatch):
     assert variables["SOE_001"]["dimension"] == "SOE"
 
 
+@pytest.mark.qa_security
 def test_missing_sub_with_secret_is_401(client):
     resp = client.get("/api/tiles/variables",
                       headers={"X-Internal-Secret": SECRET})
     assert resp.status_code == 401
 
 
+@pytest.mark.qa_interoperability
 def test_tile_endpoint_returns_compact_hexes(client):
     resp = client.get("/api/tiles/6/18/31", headers=_auth_headers())
     assert resp.status_code == 200
@@ -122,6 +128,7 @@ def test_tile_endpoint_returns_compact_hexes(client):
         assert set(h.keys()) == {"h", "s", "t", "la", "ln", "v", "off"}
 
 
+@pytest.mark.qa_interoperability
 def test_detail_endpoint_found_and_missing(client):
     found = client.get(f"/api/tiles/detail/{BOGOTA}", headers=_auth_headers())
     assert found.status_code == 200
@@ -131,6 +138,7 @@ def test_detail_endpoint_found_and_missing(client):
     assert missing.status_code == 404
 
 
+@pytest.mark.qa_interoperability
 def test_area_endpoint_returns_scores(client):
     resp = client.post("/api/tiles/area", headers=_auth_headers(),
                        json={"hexes": [BOGOTA]})
@@ -144,6 +152,7 @@ def test_area_endpoint_returns_scores(client):
     assert "SOE" not in body[0]["scores"]
 
 
+@pytest.mark.qa_interoperability
 def test_area_endpoint_requires_polygon_or_hexes(client):
     resp = client.post("/api/tiles/area", headers=_auth_headers(), json={})
     assert resp.status_code == 400

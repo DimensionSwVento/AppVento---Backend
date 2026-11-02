@@ -8,6 +8,8 @@ import pytest
 from application.services import historial_service
 from infrastructure.db import repository
 
+pytestmark = pytest.mark.qa_availability
+
 
 @pytest.mark.postgres
 def test_save_and_list_for_user(db):

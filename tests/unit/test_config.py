@@ -3,7 +3,11 @@ Configuración por entorno — helpers de parseo (bool/list) y valores por defec
 """
 from __future__ import annotations
 
+import pytest
+
 from shared import config
+
+pytestmark = pytest.mark.qa_availability
 
 
 def test_bool_helper():

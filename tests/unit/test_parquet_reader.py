@@ -27,6 +27,7 @@ MEDELLIN = h3.latlng_to_cell(6.24, -75.58, 8)   # dentro de Colombia
 MADRID = h3.latlng_to_cell(40.42, -3.70, 8)     # fuera de Colombia
 
 
+@pytest.mark.qa_interoperability
 def test_read_parquet_maps_rows_and_handles_nulls(tmp_path):
     p = tmp_path / "sample.h3.parquet"
     _write_parquet(p, [
@@ -54,11 +55,13 @@ def test_read_parquet_maps_rows_and_handles_nulls(tmp_path):
     assert parsed_at  # timestamp ISO presente
 
 
+@pytest.mark.qa_interoperability
 def test_read_parquet_missing_file_raises():
     with pytest.raises(FileNotFoundError):
         read_parquet("/no/existe.parquet")
 
 
+@pytest.mark.qa_data_quality
 def test_iter_parquet_rows_filters_out_of_colombia(tmp_path):
     p = tmp_path / "sample.h3.parquet"
     _write_parquet(p, [
@@ -70,6 +73,7 @@ def test_iter_parquet_rows_filters_out_of_colombia(tmp_path):
     assert [r["h3_index"] for r in rows] == [BOGOTA]
 
 
+@pytest.mark.qa_data_quality
 def test_iter_parquet_rows_applies_score_and_tipo_defaults(tmp_path):
     p = tmp_path / "sample.h3.parquet"
     _write_parquet(p, [
@@ -87,6 +91,7 @@ def test_iter_parquet_rows_applies_score_and_tipo_defaults(tmp_path):
     assert row["lng"] == lng
 
 
+@pytest.mark.qa_interoperability
 def test_iter_parquet_rows_missing_file_raises():
     with pytest.raises(FileNotFoundError):
         list(iter_parquet_rows("/no/existe.parquet"))

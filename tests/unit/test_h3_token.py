@@ -8,6 +8,8 @@ import pytest
 
 from infrastructure.db.models import is_h3_token
 
+pytestmark = pytest.mark.qa_data_quality
+
 
 @pytest.mark.parametrize("value", ["8866e4288bfffff", "614299631223832575", 614299631223832575])
 def test_valid_tokens(value):

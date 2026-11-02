@@ -10,6 +10,8 @@ from infrastructure.db import hexagon_repository as repo
 from infrastructure.db.hexagon_query_repository import PostgresHexagonSource
 from infrastructure.db.models import HexagonMeta
 
+pytestmark = pytest.mark.qa_availability
+
 BOGOTA = h3.latlng_to_cell(4.71, -74.07, 8)
 MEDELLIN = h3.latlng_to_cell(6.24, -75.58, 8)
 

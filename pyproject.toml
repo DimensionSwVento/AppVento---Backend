@@ -4,6 +4,21 @@ python_files = ["test_*.py"]
 addopts = "--strict-markers --tb=short"
 markers = [
     "postgres: tests de integración que requieren un PostgreSQL real (docker compose up -d db)",
+    # Atributo de calidad (catálogo compartido quality/quality-attributes.json). Cada test
+    # lleva EXACTAMENTE uno (lo verifica tests/conftest.py). Ver docs/testing/quality-attributes-pipeline.md.
+    "qa_processing: quality attribute processing (Processing)",
+    "qa_availability: quality attribute availability (Availability)",
+    "qa_data_integration: quality attribute data-integration (Data Integration)",
+    "qa_performance: quality attribute performance (Performance)",
+    "qa_result_quality: quality attribute result-quality (Result Quality)",
+    "qa_security: quality attribute security (Security)",
+    "qa_data_quality: quality attribute data-quality (Data Quality)",
+    "qa_scalability: quality attribute scalability (Scalability)",
+    "qa_interoperability: quality attribute interoperability (Interoperability)",
+    "qa_usability_geospatial: quality attribute usability-geospatial (Usability (Geospatial))",
+    "qa_traceability_auditability: quality attribute traceability-auditability (Traceability and Auditability)",
+    "qa_resilience: quality attribute resilience (Resilience)",
+    "qa_geoethics: quality attribute geoethics (Geoethics)",
 ]
 filterwarnings = [
     "ignore:Using `httpx` with `starlette.testclient` is deprecated:starlette.exceptions.StarletteDeprecationWarning",

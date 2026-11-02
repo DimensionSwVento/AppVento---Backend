@@ -8,6 +8,8 @@ import pytest
 from domain.query_engine import variable_engine as ve
 from tests.conftest import hexrow
 
+pytestmark = pytest.mark.qa_processing
+
 
 def _hx(variables):
     return hexrow("h3idx", variables=variables)

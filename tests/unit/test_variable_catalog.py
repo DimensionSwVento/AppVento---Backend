@@ -3,7 +3,11 @@ RNF-4 · Calidad de datos — catálogo de variables: códigos → nombres y dim
 """
 from __future__ import annotations
 
+import pytest
+
 import infrastructure.data.variable_catalog as vc
+
+pytestmark = pytest.mark.qa_data_quality
 
 
 def test_base_code_collapses_subvariant():

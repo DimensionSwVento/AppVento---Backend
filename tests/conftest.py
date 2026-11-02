@@ -82,3 +82,24 @@ def hexrow(h3_index: str, score: float = 0.5, lat: float = 0.0, lng: float = 0.0
 @pytest.fixture
 def fake_source():
     return FakeHexagonSource
+
+
+# ── Partición por atributo de calidad ────────────────────────────────────────
+# Cada test pertenece a EXACTAMENTE un atributo del catálogo compartido
+# (quality/quality-attributes.json), declarado con un marker `qa_<attribute_id>`.
+# Los gates de quality/gates.json seleccionan por marker, así que un test sin
+# marker no aportaría evidencia a ningún gate y uno con dos se contaría doble.
+QA_MARKER_PREFIX = "qa_"
+
+
+def pytest_collection_modifyitems(config, items):
+    offenders = []
+    for item in items:
+        qa = sorted({m.name for m in item.iter_markers() if m.name.startswith(QA_MARKER_PREFIX)})
+        if len(qa) != 1:
+            offenders.append(f"{item.nodeid}: {qa or 'no qa_* marker'}")
+    if offenders:
+        raise pytest.UsageError(
+            "Every test must carry exactly one quality-attribute marker (qa_<attribute_id>):\n  "
+            + "\n  ".join(offenders)
+        )

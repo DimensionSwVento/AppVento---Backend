@@ -4,7 +4,11 @@ ver docs/architecture/backend-api.md §2). Se instancian para no dejar el módul
 """
 from __future__ import annotations
 
+import pytest
+
 from domain.query_engine.models import Query, QueryResult, TileXYZ
+
+pytestmark = pytest.mark.qa_interoperability
 
 
 def test_legacy_query_models_instantiate():

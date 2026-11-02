@@ -8,6 +8,8 @@ import pytest
 from infrastructure.db import repository
 from infrastructure.db.models import AppUser
 
+pytestmark = pytest.mark.qa_availability
+
 
 @pytest.mark.postgres
 def test_ensure_user_creates_new_user(db):

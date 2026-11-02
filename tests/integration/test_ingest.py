@@ -14,6 +14,8 @@ import pytest
 from application.services import tile_service
 from infrastructure.db import hexagon_repository as repo
 
+pytestmark = pytest.mark.qa_data_integration
+
 BOGOTA = h3.latlng_to_cell(4.71, -74.07, 8)
 MEDELLIN = h3.latlng_to_cell(6.24, -75.58, 8)
 MADRID = h3.latlng_to_cell(40.42, -3.70, 8)  # fuera de Colombia

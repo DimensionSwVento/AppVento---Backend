@@ -30,11 +30,13 @@ def _source():
     return FakeHexagonSource(rows=rows, ranges=ranges)
 
 
+@pytest.mark.qa_processing
 def test_extract_categories():
     names = ["TEC_001", "TEC_004", "SOE_001", "AMB_002"]
     assert tile_service.extract_categories(names) == ["AMB", "SOE", "TEC"]
 
 
+@pytest.mark.qa_availability
 def test_warmup_ready():
     src = _source()
     out = tile_service.warmup(src)
@@ -44,12 +46,14 @@ def test_warmup_ready():
     assert set(out["categories"]) == {"SOE", "TEC"}
 
 
+@pytest.mark.qa_availability
 def test_warmup_empty():
     out = tile_service.warmup(FakeHexagonSource())
     assert out["status"] == "empty"
     assert out["count"] == 0
 
 
+@pytest.mark.qa_processing
 def test_get_variables_shape():
     src = _source()
     out = tile_service.get_variables(src)
@@ -60,6 +64,7 @@ def test_get_variables_shape():
     assert tec["range"] == {"min": 0.0, "max": 6.0}
 
 
+@pytest.mark.qa_processing
 def test_get_detail_found_and_missing():
     src = _source()
     bogo = h3.latlng_to_cell(4.71, -74.07, 8)
@@ -71,6 +76,7 @@ def test_get_detail_found_and_missing():
     assert tile_service.get_detail(src, missing) is None
 
 
+@pytest.mark.qa_processing
 def test_get_tile_shape_and_aggregation():
     src = _source()
     # Tile z=6 (18, 31) contiene a Bogotá → agrega a res 4.
@@ -81,6 +87,7 @@ def test_get_tile_shape_and_aggregation():
         assert h3.get_resolution(hx.h) == 4
 
 
+@pytest.mark.qa_processing
 def test_get_tile_with_var_resolves_value():
     src = _source()
     out = tile_service.get_tile(src, 6, 18, 31, var="TEC_001")
@@ -88,6 +95,7 @@ def test_get_tile_with_var_resolves_value():
     assert out[0].v == 6.0
 
 
+@pytest.mark.qa_processing
 def test_get_area_report_scores_per_dimension():
     src = _source()
     bogo = h3.latlng_to_cell(4.71, -74.07, 8)
@@ -106,6 +114,7 @@ def test_get_area_report_scores_per_dimension():
     assert by_index[med].score_general == 0.2    # 1.8 (1–5) → 0.2
 
 
+@pytest.mark.qa_processing
 def test_get_area_report_empty_input():
     out = tile_service.get_area_report(_source(), hexes=[])
     assert out == []
@@ -113,6 +122,7 @@ def test_get_area_report_empty_input():
     assert out == []
 
 
+@pytest.mark.qa_processing
 def test_resolve_cells_prefers_hexes_over_polygon():
     bogo7 = h3.latlng_to_cell(4.71, -74.07, 7)
     children = h3.cell_to_children(bogo7, 8)
@@ -122,18 +132,21 @@ def test_resolve_cells_prefers_hexes_over_polygon():
     assert set(cells) == set(children)
 
 
+@pytest.mark.qa_processing
 def test_resolve_cells_with_polygon():
     polygon = [[-74.1, 4.6], [-74.1, 4.8], [-74.0, 4.8], [-74.0, 4.6]]
     cells = tile_service._resolve_cells(polygon=polygon, hexes=None, resolution=8)
     assert cells  # el polígono se convierte a celdas H3
 
 
+@pytest.mark.qa_processing
 def test_get_counts():
     src = _source()
     out = tile_service.get_counts(src, zoom=6, selected=[])
     assert out["total"] == 2
 
 
+@pytest.mark.qa_processing
 def test_get_area_heatmap_with_hexes():
     src = _source()
     bogo = h3.latlng_to_cell(4.71, -74.07, 8)
@@ -141,6 +154,7 @@ def test_get_area_heatmap_with_hexes():
     assert out == [{"h": bogo, "value": 1.0}]  # 6.0 → norm 1.0
 
 
+@pytest.mark.qa_processing
 def test_get_area_heatmap_empty():
     src = _source()
     assert tile_service.get_area_heatmap(src, None, "TEC_001", hexes=[]) == []
