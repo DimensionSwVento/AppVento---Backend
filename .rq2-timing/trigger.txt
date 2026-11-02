@@ -1,3 +1,3 @@
-iteration=9
-timestamp=2026-11-02T16:13:41Z
+iteration=10
+timestamp=2026-11-02T16:15:34Z
 purpose=trigger the baseline (B) and protocol (P) workflows on the same commit
