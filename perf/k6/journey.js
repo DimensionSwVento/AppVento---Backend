@@ -10,36 +10,50 @@
 //
 // Entre pasos hay "tiempo de pensar" (sleep), como un humano. Cada paso es un
 // `group` → k6 mide cuánto tarda el paso COMPLETO (lo que siente el usuario).
+// Además se mide `step_ms` SIN las pausas de pensar, para separar latencia real
+// de la simulación humana.
 //
-//   ./perf/run.sh journey smoke|load|stress|spike
+//   ./perf/run.sh journey smoke|load|stress|spike|soak
+//   STRICT=1 ./perf/run.sh journey load
 import { group, sleep } from "k6";
+import { Trend } from "k6/metrics";
 import * as api from "./lib/api.js";
-import { PROFILE } from "./lib/config.js";
+import { PROFILE, STRICT } from "./lib/config.js";
 import { scenarioFor } from "./lib/profiles.js";
 import { INITIAL_VIEW, viewportBBox, zoomToH3Res, randomCenter, pan } from "./lib/geo.js";
 import { summaryFor } from "./lib/summary.js";
+import { thresholdFor, thresholdForStep } from "./lib/slo.js";
+
+const stepMs = new Trend("step_ms", true);
 
 // Umbrales: los que tienen NFR-* vienen del PRD (AppVento/_bmad-output/planning-artifacts/prd.md);
 // los demás son PROPUESTA del equipo de performance (ver perf/README.md → SLOs).
+// En modo medición (STRICT=0) solo se reportan; en modo gate se aplican.
+const thresholds = {
+  http_req_failed: ["rate<0.01"],
+  "http_req_duration{name:health}": thresholdFor("name:health", STRICT),
+  "http_req_duration{name:warmup}": thresholdFor("name:warmup", STRICT),
+  "http_req_duration{name:catalog-variables}": thresholdFor("name:catalog-variables", STRICT),
+  "http_req_duration{name:catalog-config}": thresholdFor("name:catalog-config", STRICT),
+  "http_req_duration{name:variables}": thresholdFor("name:variables", STRICT),
+  "http_req_duration{name:excluded}": thresholdFor("name:excluded", STRICT),
+  "http_req_duration{name:variables-bulk}": thresholdFor("name:variables-bulk", STRICT),
+  "http_req_duration{name:detail}": thresholdFor("name:detail", STRICT),
+  "http_req_duration{name:area}": thresholdFor("name:area", STRICT),
+  "http_req_duration{name:historico}": thresholdFor("name:historico", STRICT),
+  "step_ms{step:abrir mapa}": thresholdForStep("abrir mapa", STRICT),
+  "step_ms{step:detalle}": thresholdForStep("detalle", STRICT),
+  "step_ms{step:informe}": thresholdForStep("informe", STRICT),
+  "step_ms{step:histórico}": thresholdForStep("histórico", STRICT),
+};
+
 export const options = {
   scenarios: { journey: scenarioFor(PROFILE, "journey") },
   summaryTrendStats: ["med", "p(95)", "p(99)", "max"],
-  thresholds: {
-    http_req_failed: ["rate<0.01"],
-    "http_req_duration{name:health}": ["p(95)<300"],
-    "http_req_duration{name:warmup}": ["p(95)<500"],
-    "http_req_duration{name:catalog-variables}": ["p(95)<300"],
-    "http_req_duration{name:catalog-config}": ["p(95)<300"],
-    "http_req_duration{name:variables}": ["p(95)<300"],
-    "http_req_duration{name:excluded}": ["p(95)<1000"],
-    "http_req_duration{name:variables-bulk}": ["p(95)<2000"],  // NFR-P3: re-render al cambiar variable < 2 s
-    "http_req_duration{name:detail}": ["p(95)<300"],
-    "http_req_duration{name:area}": ["p(95)<1500"],
-    "http_req_duration{name:historico}": ["p(95)<300"],
-    "group_duration{group:::1. abrir mapa}": ["p(95)<5000"],    // NFR-P2: carga inicial del mapa < 5 s
-    "group_duration{group:::2. explorar}": ["p(95)<15000"],
-    "group_duration{group:::4. informe}": ["p(95)<2000"],      // PRD pide < 30 s TOTAL (incl. PDF); el back debe ser una fracción
-  },
+  thresholds,
+  // El muestreo del mapa (setup) puede tardar en una BD fría; no debe abortar
+  // la corrida antes de medir. No afecta la duración de los escenarios.
+  setupTimeout: "5m",
 };
 
 const think = (min, max) => sleep(min + Math.random() * (max - min));
@@ -48,6 +62,13 @@ const pick = (arr) => arr[Math.floor(Math.random() * arr.length)];
 function sample(arr, n) {
   const start = Math.floor(Math.random() * Math.max(1, arr.length - n));
   return arr.slice(start, start + n); // tramo contiguo ≈ celdas vecinas de la consulta
+}
+
+function timedStep(name, fn) {
+  const t0 = Date.now();
+  const out = fn();
+  stepMs.add(Date.now() - t0, { step: name });
+  return out;
 }
 
 // Una vez antes de la prueba: códigos de variable y celdas reales para clics/áreas.
@@ -75,11 +96,13 @@ export function journey({ codes, cells7, cells8 }) {
   let view = Object.assign({}, INITIAL_VIEW);
 
   group("1. abrir mapa", () => {
-    api.health();
-    api.config("support_email");
-    api.excluded();
-    for (let i = 0; i < 4; i++) api.catalogVariables(); // el front la pide 4 veces (sin dedupe)
-    api.historico();
+    timedStep("abrir mapa", () => {
+      api.health();
+      api.config("support_email");
+      api.excluded();
+      for (let i = 0; i < 2; i++) api.catalogVariables(); // modelo + informativa (el front las cachea)
+      api.historico();
+    });
   });
   think(2, 5);
 
@@ -104,17 +127,17 @@ export function journey({ codes, cells7, cells8 }) {
   });
 
   group("3. detalle", () => {
-    api.detail(pick(cells8));
+    timedStep("detalle", () => api.detail(pick(cells8)));
   });
   think(2, 4);
 
   group("4. informe", () => {
-    api.area(sample(cells7, 5 + Math.floor(Math.random() * 36)));
+    timedStep("informe", () => api.area(sample(cells7, 5 + Math.floor(Math.random() * 36))));
   });
   think(3, 6);
 
   group("5. histórico", () => {
-    api.historico();
+    timedStep("histórico", () => api.historico());
   });
   think(2, 4);
 }

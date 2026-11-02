@@ -1,0 +1,202 @@
+# Performance — ejecución manual y nightly contra el entorno de TEST.
+#
+# Diseño:
+#   1) Login real con Playwright (repo frontend, público) → storageState + cookie.
+#   2) Suite de navegador (LCP/TBT/FPS/NFR-P2/P3) contra el entorno.
+#   3) k6 reutiliza la cookie (MODE=bff) → carga del BFF + backend + BD.
+#
+# Requisitos (se configuran una vez, ver docs/testing/performance-testing-plan.md):
+#   vars.PERF_TEST_URL          URL pública de test (si no existe, el job se salta)
+#   vars.PERF_PROD_URL          opcional; por defecto https://www.proyectovento.com
+#   secrets.PERF_USER           usuario de prueba (rol user)
+#   secrets.PERF_PASSWORD       contraseña del usuario de prueba
+#
+# Política de la organización: NO usa actions de marketplace (solo git + runner).
+# El resumen se publica en el job summary y en los logs; no hay artifact action.
+name: Performance
+
+on:
+  workflow_dispatch:
+    inputs:
+      target:
+        description: "Entorno"
+        type: choice
+        options: [test, prod]
+        default: test
+      profile:
+        description: "Perfil de carga (prod solo admite smoke)"
+        type: choice
+        options: [smoke, load, stress]
+        default: smoke
+      run_frontend:
+        description: "Ejecutar también la suite de navegador (Playwright)"
+        type: boolean
+        default: true
+      strict:
+        description: "Fallar el job si algún SLO no se cumple (gate)"
+        type: boolean
+        default: false
+      base_url:
+        description: "URL explícita (opcional; sobreescribe vars.PERF_*)"
+        type: string
+        required: false
+  schedule:
+    - cron: "0 6 * * *" # nightly 06:00 UTC
+
+concurrency:
+  group: performance-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  performance:
+    name: "Performance (${{ inputs.target || 'test' }})"
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    # Sin URL de test configurada, el nightly no hace nada (no falla).
+    if: vars.PERF_TEST_URL != '' || inputs.base_url != '' || inputs.target == 'prod'
+    env:
+      FRONT_REPO: https://github.com/DimensionSwVento/AppVento.git
+    steps:
+      - name: Checkout backend (sin marketplace)
+        run: |
+          git init -q .
+          git remote add origin "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+          git fetch -q --depth 1 origin "$GITHUB_SHA"
+          git checkout -q FETCH_HEAD
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+
+      - name: Resolver entorno y validar guardas
+        id: cfg
+        env:
+          TARGET: ${{ inputs.target || 'test' }}
+          PROFILE: ${{ inputs.profile || 'smoke' }}
+          BASE_URL_INPUT: ${{ inputs.base_url }}
+          TEST_URL: ${{ vars.PERF_TEST_URL }}
+          PROD_URL: ${{ vars.PERF_PROD_URL }}
+          PERF_USER: ${{ secrets.PERF_USER }}
+          PERF_PASSWORD: ${{ secrets.PERF_PASSWORD }}
+        run: |
+          set -euo pipefail
+          URL="$BASE_URL_INPUT"
+          if [ -z "$URL" ]; then
+            if [ "$TARGET" = "prod" ]; then URL="${PROD_URL:-https://www.proyectovento.com}"; else URL="$TEST_URL"; fi
+          fi
+          if [ -z "$URL" ]; then
+            echo "::notice::PERF_TEST_URL no está configurada; se omite la corrida."
+            echo "skip=1" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if [ "$TARGET" = "prod" ] && [ "$PROFILE" != "smoke" ]; then
+            echo "::error::Contra producción solo se permite smoke (perfil=$PROFILE)."
+            exit 2
+          fi
+          if [ -z "$PERF_USER" ] || [ -z "$PERF_PASSWORD" ]; then
+            echo "::error::Faltan secrets.PERF_USER / secrets.PERF_PASSWORD."
+            exit 2
+          fi
+          echo "base_url=$URL" >> "$GITHUB_OUTPUT"
+          echo "target=$TARGET" >> "$GITHUB_OUTPUT"
+          echo "profile=$PROFILE" >> "$GITHUB_OUTPUT"
+          echo "skip=0" >> "$GITHUB_OUTPUT"
+          echo "URL=$URL · target=$TARGET · profile=$PROFILE · commit=${GITHUB_SHA::7}" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Checkout frontend (público)
+        if: success() && steps.cfg.outputs.skip != '1'
+        run: |
+          git clone --depth 1 --branch "${{ vars.PERF_FRONT_BRANCH || 'develop' }}" "$FRONT_REPO" frontend
+
+      - name: Instalar frontend + Chromium
+        if: success() && steps.cfg.outputs.skip != '1'
+        working-directory: frontend/Vento
+        run: |
+          node -v && npm -v
+          npm ci
+          npx playwright install --with-deps chromium
+
+      - name: Login real y exportar cookie
+        if: success() && steps.cfg.outputs.skip != '1'
+        working-directory: frontend/Vento
+        env:
+          PERF_BASE_URL: ${{ steps.cfg.outputs.base_url }}
+          PERF_ENV: ${{ steps.cfg.outputs.target }}
+          PERF_USER: ${{ secrets.PERF_USER }}
+          PERF_PASSWORD: ${{ secrets.PERF_PASSWORD }}
+        run: npx playwright test --config playwright.perf.config.ts --project=setup
+
+      - name: Frontend performance (medición)
+        id: front
+        if: success() && steps.cfg.outputs.skip != '1' && (github.event_name == 'schedule' || inputs.run_frontend != false)
+        continue-on-error: true
+        working-directory: frontend/Vento
+        env:
+          PERF_BASE_URL: ${{ steps.cfg.outputs.base_url }}
+          PERF_ENV: ${{ steps.cfg.outputs.target }}
+          PERF_USER: ${{ secrets.PERF_USER }}
+          PERF_PASSWORD: ${{ secrets.PERF_PASSWORD }}
+        run: |
+          if [ "${{ steps.cfg.outputs.target }}" = "prod" ]; then
+            npm run perf:e2e:smoke
+          else
+            npm run perf:e2e
+          fi
+
+      - name: Resumen del frontend (medianas)
+        if: always() && steps.cfg.outcome == 'success' && steps.cfg.outputs.skip != '1' && steps.front.outcome != 'skipped'
+        working-directory: frontend/Vento
+        run: npm run perf:report || true
+
+      - name: Backend k6 (medición)
+        id: back
+        if: success() && steps.cfg.outputs.skip != '1'
+        continue-on-error: true
+        env:
+          BASE_URL: ${{ steps.cfg.outputs.base_url }}
+          MODE: bff
+          COOKIE_FILE: ${{ github.workspace }}/frontend/Vento/e2e/.auth/perf.json
+          ENV_NAME: ${{ steps.cfg.outputs.target }}
+          PROFILE: ${{ steps.cfg.outputs.profile }}
+          STRICT: "1"
+        run: |
+          set +e
+          if [ "$PROFILE" = "smoke" ]; then
+            ./perf/run.sh endpoints smoke
+            A=$?
+            ./perf/run.sh journey smoke
+            B=$?
+            exit $((A || B))
+          fi
+          ./perf/run.sh journey "$PROFILE"
+
+      - name: Resumen en el job
+        if: always() && steps.cfg.outcome == 'success' && steps.cfg.outputs.skip != '1'
+        env:
+          TARGET: ${{ steps.cfg.outputs.target }}
+        run: |
+          {
+            echo "## Performance — $TARGET"
+            echo ""
+            echo "### Navegador (Playwright)"
+            if ls frontend/Vento/perf-results/*.md >/dev/null 2>&1; then
+              cat frontend/Vento/perf-results/summary.md 2>/dev/null || true
+            fi
+            echo ""
+            echo "### API (k6)"
+            for f in perf/results/*.md; do
+              [ -f "$f" ] || continue
+              echo "#### $(basename "$f")"
+              cat "$f"
+              echo ""
+            done
+            echo ""
+            echo "> Artefactos: frontend/Vento/perf-results (JSON) y perf/results (JSON/MD) en el runner."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Gate de SLO (opcional)
+        if: success() && inputs.strict == true && steps.cfg.outputs.skip != '1'
+        run: |
+          if [ "${{ steps.front.outcome }}" = "failure" ] || [ "${{ steps.back.outcome }}" = "failure" ]; then
+            echo "::error::Algún SLO no se cumplió (STRICT=1)."
+            exit 1
+          fi
+          echo "SLOs cumplidos."

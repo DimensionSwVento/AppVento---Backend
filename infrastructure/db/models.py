@@ -6,7 +6,7 @@ from datetime import datetime, timezone
 from typing import Optional
 
 from sqlalchemy import (
-    BigInteger, Boolean, DateTime, Float, ForeignKey, Integer, String, TypeDecorator,
+    BigInteger, Boolean, DateTime, Float, ForeignKey, Integer, String, TypeDecorator, text,
 )
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
@@ -147,9 +147,13 @@ class Hexagon(Base):
     variables: Mapped[dict] = mapped_column(JSONB, default=dict)
     # Scores PRECALCULADOS del modelo (bundle): por criterio/subcriterio. `global`
     # va aparte en `score_general`. JSONB para no acoplar el esquema a los criterios.
-    scores: Mapped[dict] = mapped_column(JSONB, default=dict)
+    scores: Mapped[dict] = mapped_column(
+        JSONB, default=dict, server_default=text("'{}'::jsonb")
+    )
     # Emplazamiento del bundle de origen (onshore ahora; offshore = bundle futuro).
-    emplazamiento: Mapped[str] = mapped_column(String, default="onshore", index=True)
+    emplazamiento: Mapped[str] = mapped_column(
+        String, default="onshore", server_default="onshore", index=True
+    )
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=_now, onupdate=_now
     )

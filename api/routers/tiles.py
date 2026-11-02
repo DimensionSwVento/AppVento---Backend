@@ -17,11 +17,16 @@ router = APIRouter(prefix="/tiles", tags=["tiles"])
 # identidad verificada. Solo `warmup`/`health` quedan abiertos por diseño.
 _auth = [Depends(require_user)]
 
+# Datos del mapa: cambian solo al reingerir la master. `private` = solo caché del
+# navegador (no proxies compartidos) y TTL corto para no mostrar datos viejos.
+_CACHE_MAP = {"Cache-Control": "private, max-age=300"}
+_CACHE_META = {"Cache-Control": "private, max-age=60"}
+
 
 @router.get("/warmup")
 def warmup(source: HexagonSource = Depends(get_hexagon_source)):
     # Ya no carga datos a memoria: devuelve el bundle de metadatos (count + meta).
-    return JSONResponse(content=tile_service.warmup(source))
+    return JSONResponse(content=tile_service.warmup(source), headers=_CACHE_META)
 
 
 @router.get("/variables", dependencies=_auth)
@@ -34,7 +39,7 @@ def get_variables(
     # Etiquetas REALES desde `catalog_variable` (BD, ingerido de InfoVariables);
     # el tile ya no depende del stub hardcodeado para nombrar/dimensionar.
     labels = catalog_service.tile_labels(db)
-    return JSONResponse(content=tile_service.get_variables(source, labels))
+    return JSONResponse(content=tile_service.get_variables(source, labels), headers=_CACHE_MAP)
 
 
 @router.get("/counts", dependencies=_auth)
@@ -45,7 +50,7 @@ def get_counts(
     source: HexagonSource = Depends(get_hexagon_source),
 ):
     selected_list = [s for s in (selected or "").split(",") if s]
-    return JSONResponse(content=tile_service.get_counts(source, zoom, selected_list, var))
+    return JSONResponse(content=tile_service.get_counts(source, zoom, selected_list, var), headers=_CACHE_MAP)
 
 
 @router.get("/detail/{h3_index}", dependencies=_auth)
@@ -53,14 +58,14 @@ def get_detail(h3_index: str, source: HexagonSource = Depends(get_hexagon_source
     detail = tile_service.get_detail(source, h3_index)
     if detail is None:
         raise HTTPException(status_code=404, detail=f"Hex {h3_index} not found.")
-    return JSONResponse(content=asdict(detail))
+    return JSONResponse(content=asdict(detail), headers=_CACHE_MAP)
 
 
 @router.get("/excluded", dependencies=_auth)
 def excluded_cells(source: HexagonSource = Depends(get_hexagon_source)):
     """Capa COMPLETA de excluidos en una sola petición → el front la cachea y deja
     de pedir `get_tile` por cada tile solo para marcar zonas no seleccionables."""
-    return JSONResponse(content={"cells": tile_service.excluded_cells(source)})
+    return JSONResponse(content={"cells": tile_service.excluded_cells(source)}, headers=_CACHE_MAP)
 
 
 @router.get("/{z}/{x}/{y}", dependencies=_auth)

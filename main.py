@@ -20,6 +20,7 @@ from anyio import to_thread
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.concurrency import run_in_threadpool
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.middleware.gzip import GZipMiddleware
 
 from shared import config
 from infrastructure.db.session import init_db, SessionLocal
@@ -139,6 +140,10 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+# Las respuestas del mapa son JSON grande (bulk/excluded/tiles): comprimirlas
+# reduce el tiempo de transferencia en redes reales. Nginx puede re-comprimir;
+# si ya viene `Content-Encoding`, el middleware no toca la respuesta.
+app.add_middleware(GZipMiddleware, minimum_size=1024)
 
 
 @app.middleware("http")

@@ -5,8 +5,9 @@
 //   load   → la carga esperada (TARGET_VUS, def. 20) sostenida. ¿Cumplimos los SLOs?
 //   stress → sube por escalones hasta pasar el techo. ¿Dónde y cómo se rompe?
 //   spike  → salto brusco de 0 a muchos. ¿Se recupera después?
+//   soak   → carga sostenida por DURATION (def. 30m). ¿Hay fugas/degradación?
 
-const TARGET = parseInt(__ENV.TARGET_VUS || "20", 10);
+const TARGET = Math.max(1, parseInt(__ENV.TARGET_VUS || "20", 10));
 
 export function scenarioFor(profile, exec) {
   switch (profile) {
@@ -27,6 +28,18 @@ export function scenarioFor(profile, exec) {
           { duration: "1m", target: TARGET },  // rampa de subida
           { duration: __ENV.DURATION || "5m", target: TARGET }, // meseta
           { duration: "30s", target: 0 },      // bajada
+        ],
+        gracefulRampDown: "30s",
+      };
+    case "soak":
+      return {
+        executor: "ramping-vus",
+        exec,
+        startVUs: 0,
+        stages: [
+          { duration: "1m", target: TARGET },
+          { duration: __ENV.DURATION || "30m", target: TARGET },
+          { duration: "30s", target: 0 },
         ],
         gracefulRampDown: "30s",
       };
@@ -51,8 +64,8 @@ export function scenarioFor(profile, exec) {
         startVUs: 0,
         stages: [
           { duration: "1m", target: 5 },        // tráfico normal
-          { duration: "10s", target: TARGET * 4 }, // pico
-          { duration: "1m", target: TARGET * 4 },
+          { duration: "10s", target: Math.min(500, TARGET * 4) }, // pico
+          { duration: "1m", target: Math.min(500, TARGET * 4) },
           { duration: "10s", target: 5 },        // vuelve a la normalidad…
           { duration: "2m", target: 5 },         // …¿se recuperó?
           { duration: "10s", target: 0 },
@@ -60,6 +73,6 @@ export function scenarioFor(profile, exec) {
         gracefulRampDown: "30s",
       };
     default:
-      throw new Error(`PROFILE desconocido: ${profile} (smoke|load|stress|spike)`);
+      throw new Error(`PROFILE desconocido: ${profile} (smoke|load|stress|spike|soak)`);
   }
 }

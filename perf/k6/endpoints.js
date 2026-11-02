@@ -5,25 +5,36 @@
 // se degrada cada endpoint con concurrencia. La capa del mapa (variables-bulk) se
 // mide por nivel de zoom porque su costo depende del área visible.
 //
-//   ./perf/run.sh endpoints              (VUS=1, 20s por endpoint)
+//   ./perf/run.sh endpoints                 (VUS=1, 20s por endpoint, solo mide)
+//   STRICT=1 ./perf/run.sh endpoints        (falla si no se cumple el SLO)
 //   VUS=10 ./perf/run.sh endpoints
 import { sleep } from "k6";
 import * as api from "./lib/api.js";
 import { viewportBBox, zoomToH3Res, randomCenter, INITIAL_VIEW } from "./lib/geo.js";
 import { summaryFor } from "./lib/summary.js";
+import { STRICT } from "./lib/config.js";
+import { thresholdFor } from "./lib/slo.js";
 
 const VUS = parseInt(__ENV.VUS || "1", 10);
 const STEP = __ENV.STEP || "20s";
 const STEP_S = parseInt(STEP, 10);
 
-const ENDPOINTS = [
+const ENDPOINTS_ALL = [
   "warmup", "variables", "excluded", "detail", "area", "historico",
   "bulk_z12", "bulk_z10", "bulk_z8", "bulk_z6", // z6 (país completo) al final: es el más lento
 ];
+// Permite una corrida rápida de un subconjunto:
+//   ENDPOINTS=variables,detail,area ./perf/run.sh endpoints
+const ENDPOINTS = (__ENV.ENDPOINTS || "")
+  .split(",")
+  .map((s) => s.trim())
+  .filter(Boolean);
+const SELECTED = ENDPOINTS.length ? ENDPOINTS_ALL.filter((e) => ENDPOINTS.includes(e)) : ENDPOINTS_ALL;
+if (SELECTED.length === 0) throw new Error(`ENDPOINTS no coincide con ninguno de: ${ENDPOINTS_ALL.join(", ")}`);
 
 const scenarios = {};
 const thresholds = { http_req_failed: ["rate<0.01"] };
-ENDPOINTS.forEach((name, i) => {
+SELECTED.forEach((name, i) => {
   scenarios[name] = {
     executor: "constant-vus",
     exec: name,
@@ -32,16 +43,30 @@ ENDPOINTS.forEach((name, i) => {
     gracefulStop: "2m", // deja terminar la última petición lenta (sin cortarla a medias)
     startTime: `${i * (STEP_S + 5)}s`, // secuenciales, con 5 s de respiro entre cada uno
   };
-  // Umbral "siempre verdadero": solo para que k6 reporte p95 por escenario.
-  thresholds[`http_req_duration{scenario:${name}}`] = ["max>=0"];
+  // En modo medición el umbral es "siempre verdadero": solo hace que k6 reporte
+  // el p95 por escenario. En modo gate (STRICT=1) se aplica el SLO real.
+  thresholds[`http_req_duration{scenario:${name}}`] = thresholdFor(`scenario:${name}`, STRICT);
 });
 
-export const options = { scenarios, thresholds, summaryTrendStats: ["med", "p(95)", "p(99)", "max"] };
+export const options = {
+  scenarios,
+  thresholds,
+  summaryTrendStats: ["med", "p(95)", "p(99)", "max"],
+  // El muestreo del mapa (setup) puede tardar en una BD fría; no debe abortar
+  // la corrida antes de medir. No afecta la duración de los escenarios.
+  setupTimeout: "5m",
+};
 
 const pick = (arr) => arr[Math.floor(Math.random() * arr.length)];
 
 export function setup() {
+  // Solo los escenarios detail/area necesitan celdas reales; así una corrida
+  // rápida de `ENDPOINTS=variables` no paga el costo de muestrear el mapa.
+  const needCells = SELECTED.some((e) => e === "detail" || e === "area");
+  if (!needCells) return { codes: [], cells7: [], cells8: [] };
+
   const codes = api.fetchCodes();
+  if (codes.length === 0) throw new Error("/tiles/variables no devolvió variables (¿BD vacía? ¿auth?)");
   const cells7 = [];
   const cells8 = [];
   for (let i = 0; i < 5; i++) {
@@ -49,6 +74,10 @@ export function setup() {
     cells7.push(...api.fetchCells(codes, viewportBBox(c.lng, c.lat, 10), 7));
     cells8.push(...api.fetchCells(codes, viewportBBox(c.lng, c.lat, 12), 8));
   }
+  if (cells7.length === 0 || cells8.length === 0) {
+    throw new Error("No se obtuvieron celdas de muestra de variables-bulk.");
+  }
+  console.log(`setup: ${codes.length} variables · ${cells7.length} celdas res7 · ${cells8.length} celdas res8`);
   return { codes, cells7, cells8 };
 }
 

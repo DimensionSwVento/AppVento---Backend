@@ -91,6 +91,25 @@ def test_tiles_accept_internal_secret(client):
     assert resp.status_code == 200
     names = {v["name"] for v in resp.json()["variables"]}
     assert names == {"SOE_001", "TEC_001"}
+    # El front puede cachear el catálogo (datos que cambian solo con la ingesta).
+    assert resp.headers["cache-control"] == "private, max-age=300"
+
+
+def test_large_json_is_gzipped(client):
+    # `excluded` no toca la BD de catálogo: devuelve una lista grande y permite
+    # verificar la compresión real del middleware (> minimum_size).
+    class BigExcludedSource(FakeHexagonSource):
+        def excluded_cells(self):
+            return [f"excluded-{i:06d}" for i in range(3000)]
+
+    app_module.app.dependency_overrides[deps.get_hexagon_source] = BigExcludedSource
+    resp = client.get(
+        "/api/tiles/excluded",
+        headers={**_auth_headers(), "Accept-Encoding": "gzip"},
+    )
+    assert resp.status_code == 200
+    assert resp.headers.get("content-encoding") == "gzip"
+    assert resp.headers.get("cache-control") == "private, max-age=300"
 
 
 def test_missing_sub_with_secret_is_401(client):

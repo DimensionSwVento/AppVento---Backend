@@ -12,7 +12,9 @@ from __future__ import annotations
 import hashlib
 import logging
 import os
+import threading
 import time
+from collections import OrderedDict
 from typing import Optional
 
 import h3
@@ -244,13 +246,71 @@ def _resolve_code(available: list[str], code: str, subtemplate: bool) -> tuple[O
     return ordered[idx], True
 
 
+def _cacheable_source(source: HexagonSource) -> bool:
+    """Solo cachear la fuente real (Postgres). En tests/stubs el estado cambia
+    entre casos y una caché global devolvería datos de otro test."""
+    return source.__class__.__name__ == "PostgresHexagonSource"
+
+
+# Caché EN PROCESO de capas de variable. `variables-bulk` a zoom país escanea
+# ~1,6 M filas y agrega a res4; varios usuarios/reloads piden exactamente el
+# mismo bbox+codes. Se cachea con TTL corto y tamaño acotado (no es una caché
+# de datos maestros; la ingesta la invalida). Mejora la latencia de los requests
+# repetidos mientras la solución estructural (preagregación por res) llega.
+_bulk_cache: "OrderedDict[str, tuple[float, object]]" = OrderedDict()
+_bulk_cache_lock = threading.Lock()
+_BULK_CACHE_TTL = float(os.getenv("BULK_CACHE_TTL", "120"))
+_BULK_CACHE_MAX = int(os.getenv("BULK_CACHE_MAX", "16"))
+
+
+def _bbox_key(bbox: Optional[dict]) -> str:
+    if not bbox:
+        return "country"
+    return ",".join(f"{float(bbox[k]):.4f}" for k in ("west", "south", "east", "north"))
+
+
+def _layer_cache_key(prefix: str, codes: list[str], bbox: Optional[dict],
+                     threshold: float, subtemplate: bool, res: Optional[int]) -> str:
+    return (
+        f"{prefix}|{res}|{threshold:.6f}|{int(subtemplate)}|"
+        f"{_bbox_key(bbox)}|{','.join(sorted(codes))}"
+    )
+
+
+def _cache_get(key: str):
+    now = time.time()
+    with _bulk_cache_lock:
+        item = _bulk_cache.get(key)
+        if item is None:
+            return None
+        ts, value = item
+        if now - ts > _BULK_CACHE_TTL:
+            _bulk_cache.pop(key, None)
+            return None
+        _bulk_cache.move_to_end(key)
+        return value
+
+
+def _cache_put(key: str, value) -> None:
+    with _bulk_cache_lock:
+        _bulk_cache[key] = (time.time(), value)
+        _bulk_cache.move_to_end(key)
+        while len(_bulk_cache) > _BULK_CACHE_MAX:
+            _bulk_cache.popitem(last=False)
+
+
+def invalidate_bulk_cache() -> None:
+    """La ingesta cambió los datos: tira las capas cacheadas."""
+    with _bulk_cache_lock:
+        _bulk_cache.clear()
+
+
 def get_variable_layer(source: HexagonSource, code: str,
                        bbox: Optional[dict] = None,
                        threshold: float = 0.0,
                        subtemplate: bool = False,
                        res: Optional[int] = None) -> list[dict]:
-    """
-    Capa de una variable en un bbox: `[{h3_index, value}]` con el valor normalizado
+    """Capa de una variable en un bbox: `[{h3_index, value}]` con el valor normalizado
     0–1 donde la variable está presente. Sin bbox usa Colombia entera.
 
     MEMORIA (evita OOM): lee el bbox en STREAMING (no materializa millones de
@@ -267,6 +327,15 @@ def get_variable_layer(source: HexagonSource, code: str,
     # gruesa para que la respuesta y la memoria queden acotadas siempre.
     if res is None and bbox is None:
         res = _COUNTRY_AGG_RES
+    cache_key = (
+        _layer_cache_key("single", [code], bbox, threshold, subtemplate, res)
+        if _cacheable_source(source)
+        else None
+    )
+    if cache_key:
+        cached = _cache_get(cache_key)
+        if cached is not None:
+            return cached  # type: ignore[return-value]
     available = source.variable_names()
     eff_code, is_sub = _resolve_code(available, code, subtemplate)
     if eff_code is None:
@@ -289,7 +358,10 @@ def get_variable_layer(source: HexagonSource, code: str,
                 parent = hx.h3_index
             s, c = agg.get(parent, (0.0, 0))
             agg[parent] = (s + v, c + 1)
-        return [{"h3_index": p, "value": s / c} for p, (s, c) in agg.items()]
+        result = [{"h3_index": p, "value": s / c} for p, (s, c) in agg.items()]
+        if cache_key:
+            _cache_put(cache_key, result)
+        return result
 
     out: list[dict] = []
     for hx in rows:
@@ -299,6 +371,8 @@ def get_variable_layer(source: HexagonSource, code: str,
         if value_norm is None or value_norm < threshold:
             continue  # variable ausente en el hex o bajo el umbral
         out.append({"h3_index": hx.h3_index, "value": value_norm})
+    if cache_key:
+        _cache_put(cache_key, out)
     return out
 
 
@@ -316,6 +390,15 @@ def get_variable_layers(source: HexagonSource, codes: list[str],
     b = bbox or _COLOMBIA_BBOX
     if res is None and bbox is None:
         res = _COUNTRY_AGG_RES
+    cache_key = (
+        _layer_cache_key("bulk", codes, bbox, threshold, subtemplate, res)
+        if _cacheable_source(source)
+        else None
+    )
+    if cache_key:
+        cached = _cache_get(cache_key)
+        if cached is not None:
+            return cached  # type: ignore[return-value]
     available = source.variable_names()
     # Resuelve cada código una sola vez (código efectivo + rango).
     resolved: dict[str, tuple[str, Optional[dict]]] = {}
@@ -350,6 +433,8 @@ def get_variable_layers(source: HexagonSource, codes: list[str],
             result[code] = [{"h3_index": p, "value": s / c} for p, (s, c) in agg[code].items()]
         else:
             result[code] = flat[code]
+    if cache_key:
+        _cache_put(cache_key, result)
     return result
 
 
@@ -485,6 +570,7 @@ def update_from_parquet(db, path: str | None = None, on_progress=None) -> int:
         n = hexrepo.replace_all(db, rows, on_progress=on_progress)
     else:
         n = hexrepo.copy_ingest(db, rows, on_progress=on_progress)
-    # La capa de excluidos cambió → invalida la caché en proceso.
+    # La capa de excluidos y las capas de variable cambiaron → invalida cachés.
     invalidate_excluded_cache()
+    invalidate_bulk_cache()
     return n

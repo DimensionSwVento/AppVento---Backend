@@ -158,6 +158,10 @@ def copy_ingest(
 
     # `hexagon_meta` en la MISMA transacción (misma conexión) → atómico con el COPY.
     _write_meta(db, meta)
+    # Estadísticas frescas para el planner (reltuples/histogramas). Sin esto, tras
+    # una ingesta `excluded`/`variables-bulk` pueden elegir un plan secuencial y
+    # tardar decenas de segundos (fue un artefacto real del benchmark de 2026-10).
+    db.execute(text("ANALYZE hexagon"))
     db.commit()
     if on_progress:
         on_progress(total)
@@ -201,6 +205,7 @@ def replace_all(
         total += len(batch)
 
     _write_meta(db, meta)
+    db.execute(text("ANALYZE hexagon"))
     db.commit()
     if on_progress:
         on_progress(total)
