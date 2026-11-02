@@ -34,10 +34,13 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 DEFAULT_REPO = "DimensionSwVento/AppVento---Backend"
+DEFAULT_FRONTEND_REPO = "DimensionSwVento/AppVento"
 DEFAULT_BRANCH = "research/quality-pipeline-v2"
-TRIGGER_PATH = ".rq2-timing/trigger.txt"
+DEFAULT_TRIGGER_PATH = ".rq2-timing/trigger.txt"
+DEFAULT_FRONTEND_TRIGGER_PATH = "quality/.rq2-timing/trigger.txt"
 BASELINE_WORKFLOW = "RQ2 Timing Baseline (develop CI)"
 PROTOCOL_WORKFLOW = "Backend Quality Attributes Pipeline"
+FRONTEND_PROTOCOL_WORKFLOW = "Quality Attributes Pipeline"
 POLL_SECONDS = 10
 
 
@@ -87,8 +90,8 @@ def cmd_run(args: argparse.Namespace) -> int:
             if r.get("runs", {}).get("B") and r.get("runs", {}).get("P")}
     start = args.start or (max(done) + 1 if done else 1)
 
-    trigger = repo_dir / TRIGGER_PATH
-    trigger.parent.mkdir(exist_ok=True)
+    trigger = repo_dir / args.trigger_path
+    trigger.parent.mkdir(parents=True, exist_ok=True)
     for i in range(start, start + args.iterations):
         if i in done:
             print(f"[rq2-timing] iteration {i}: already recorded, skip", flush=True)
@@ -98,7 +101,7 @@ def cmd_run(args: argparse.Namespace) -> int:
             f"iteration={i}\ntimestamp={stamp}\n"
             "purpose=trigger the baseline (B) and protocol (P) workflows on the same commit\n",
             encoding="utf-8")
-        git(repo_dir, "add", TRIGGER_PATH)
+        git(repo_dir, "add", args.trigger_path)
         git(repo_dir, "-c", "user.name=rq2-timing",
             "-c", "user.email=rq2-timing@localhost",
             "commit", "-q", "-m", f"chore(rq2-timing): iteration {i}")
@@ -111,14 +114,15 @@ def cmd_run(args: argparse.Namespace) -> int:
             runs = json.loads(gh("run", "list", "--repo", args.repo, "--commit", sha,
                                  "--limit", "20", "--json",
                                  "databaseId,name,status,conclusion,createdAt,url"))
-            ours = {r["name"]: r for r in runs if r["name"] in (BASELINE_WORKFLOW, PROTOCOL_WORKFLOW)}
+            ours = {r["name"]: r for r in runs
+                    if r["name"] in (args.baseline_workflow, args.protocol_workflow)}
             if len(ours) == 2 and all(r["status"] == "completed" for r in ours.values()):
                 break
             if time.monotonic() > deadline:
                 raise SystemExit(f"iteration {i}: timed out waiting for the two runs of {sha}")
             time.sleep(POLL_SECONDS)
 
-        b, p = ours[BASELINE_WORKFLOW], ours[PROTOCOL_WORKFLOW]
+        b, p = ours[args.baseline_workflow], ours[args.protocol_workflow]
         records = [r for r in records if r.get("iteration") != i]
         records.append({
             "iteration": i,
@@ -205,8 +209,8 @@ def cmd_collect(args: argparse.Namespace) -> int:
         "repo": args.repo,
         "branch": args.branch,
         "productCommit": record[-1]["sha"] if record else None,
-        "baselineWorkflow": BASELINE_WORKFLOW,
-        "protocolWorkflow": PROTOCOL_WORKFLOW,
+        "baselineWorkflow": args.baseline_workflow,
+        "protocolWorkflow": args.protocol_workflow,
         "runs": rows,
         "aggregates": aggregates,
         "ratioPoverB": ratio,
@@ -264,6 +268,9 @@ def main(argv: list[str] | None = None) -> int:
     r.add_argument("--repo-dir", type=Path, required=True)
     r.add_argument("--repo", default=DEFAULT_REPO)
     r.add_argument("--branch", default=DEFAULT_BRANCH)
+    r.add_argument("--trigger-path", default=DEFAULT_TRIGGER_PATH)
+    r.add_argument("--baseline-workflow", default=BASELINE_WORKFLOW)
+    r.add_argument("--protocol-workflow", default=PROTOCOL_WORKFLOW)
     r.add_argument("--iterations", type=int, default=10)
     r.add_argument("--start", type=int, default=None)
     r.add_argument("--timeout", type=int, default=1800, help="seconds per iteration")
@@ -273,6 +280,8 @@ def main(argv: list[str] | None = None) -> int:
     c = sub.add_parser("collect", help="turn recorded run ids into timings")
     c.add_argument("--repo", default=DEFAULT_REPO)
     c.add_argument("--branch", default=DEFAULT_BRANCH)
+    c.add_argument("--baseline-workflow", default=BASELINE_WORKFLOW)
+    c.add_argument("--protocol-workflow", default=PROTOCOL_WORKFLOW)
     c.add_argument("--runs", type=Path, required=True)
     c.add_argument("--out", type=Path, required=True)
     c.add_argument("--markdown", type=Path, default=None)
