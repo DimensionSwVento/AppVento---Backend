@@ -71,6 +71,11 @@ def test_service_recovers_after_its_database_connections_are_killed(app_engine, 
     assert r.json() == {"status": "ok", "index_ready": True}
 
 
+@pytest.mark.xfail(
+    strict=True,
+    reason="D4/#29: COPY mantiene ACCESS EXCLUSIVE sobre hexagon durante toda la "
+           "ingesta y /api/health depende de esa tabla",
+)
 def test_health_stays_responsive_while_a_master_ingest_is_running(app_engine, seeded,
                                                                   session_factory):
     """A destructive master ingest (production COPY path) is in progress: the

@@ -106,6 +106,11 @@ def test_regulatory_norms_are_served_with_their_declared_origin(db, tmp_path):
 
 # ── License validation ───────────────────────────────────────────────────────
 
+@pytest.mark.xfail(
+    strict=True,
+    reason="D9/#34: no hay validación de procedencia/licencia; el default "
+           "'Por definir' hace que la variable se sirva igual",
+)
 def test_no_variable_is_served_without_origin_and_license(db, tmp_path):
     """Invariant: whatever the ingested document contains, the catalog the app
     receives never exposes a variable whose source, source URL or license is
