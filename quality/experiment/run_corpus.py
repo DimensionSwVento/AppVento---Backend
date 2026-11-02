@@ -25,7 +25,11 @@ schema is dropped and recreated before every run. Defects are applied with
 
 Usage:
   python quality/experiment/run_corpus.py --corpus <dir with manifest.json> \
-      --results <dir> [--ids D-B03,R-D1] [--clean-runs 2] [--skip-clean]
+      --results <dir> [--ids D-B03,R-D1] [--clean-runs 2] [--skip-clean] [--rerun]
+
+Resumable: defects whose result file is complete are skipped (unless --rerun); clean
+results are reused when only quality/experiment/ changed since they were recorded;
+the tmp-back-B / tmp-back-P worktrees are always force-recreated on start.
 """
 from __future__ import annotations
 
@@ -270,6 +274,36 @@ def detect(res: dict, cleans: list[dict], gate_attr: dict[str, str] | None = Non
     return out
 
 
+# ── resume support ───────────────────────────────────────────────────────────
+
+def write_json(path: Path, data: dict) -> None:
+    """Atomic write: an interrupted run never leaves a truncated result file."""
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp.write_text(json.dumps(data, indent=1, ensure_ascii=False) + "\n", encoding="utf-8")
+    tmp.replace(path)
+
+
+def result_complete(path: Path) -> bool:
+    try:
+        row = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return False
+    return all("detection" in row.get(c, {}) for c in ("B", "P"))
+
+
+def clean_reusable(path: Path, runs: int) -> bool:
+    """Clean results can be reused when they hold enough runs and nothing outside
+    quality/experiment/ (the harness itself) changed since their research commit."""
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return False
+    if len(data.get("runs", [])) < runs:
+        return False
+    changed = git(REPO, "diff", "--name-only", data["researchCommit"], "HEAD", check=False).splitlines()
+    return all(f.startswith("quality/experiment/") for f in changed)
+
+
 # ── main ─────────────────────────────────────────────────────────────────────
 
 def main(argv: list[str] | None = None) -> int:
@@ -279,6 +313,8 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--ids", default="")
     ap.add_argument("--clean-runs", type=int, default=2)
     ap.add_argument("--skip-clean", action="store_true", help="reuse clean-B.json / clean-P.json")
+    ap.add_argument("--rerun", action="store_true",
+                    help="re-run defects whose result file already exists (default: resume, skip them)")
     args = ap.parse_args(argv)
 
     manifest = json.loads((args.corpus / "manifest.json").read_text(encoding="utf-8"))
@@ -300,6 +336,10 @@ def main(argv: list[str] | None = None) -> int:
     print(f"research {research_commit[:8]} · develop {develop_commit[:8]} · B base {base_b[:8]}", flush=True)
 
     clean_b_path, clean_p_path = args.results / "clean-B.json", args.results / "clean-P.json"
+    if not args.skip_clean and clean_reusable(clean_b_path, args.clean_runs) \
+            and clean_reusable(clean_p_path, args.clean_runs):
+        print("resume: reusing clean-B.json / clean-P.json (no product/test change since)", flush=True)
+        args.skip_clean = True
     if args.skip_clean:
         clean_b = json.loads(clean_b_path.read_text())["runs"]
         clean_p = json.loads(clean_p_path.read_text())["runs"]
@@ -315,12 +355,14 @@ def main(argv: list[str] | None = None) -> int:
                   f"P {clean_p[-1]['durationSeconds']}s ({clean_p[-1].get('decision')})", flush=True)
         for path, cond, runs in ((clean_b_path, "B", clean_b), (clean_p_path, "P", clean_p)):
             ok_c, ok_t = stable_passing(runs)
-            path.write_text(json.dumps({**meta, "date": utc(), "condition": cond, "runs": runs,
-                                        "stablePassingChecks": sorted(ok_c),
-                                        "stablePassingTestCount": len(ok_t)},
-                                       indent=1, ensure_ascii=False) + "\n", encoding="utf-8")
+            write_json(path, {**meta, "date": utc(), "condition": cond, "runs": runs,
+                              "stablePassingChecks": sorted(ok_c), "stablePassingTestCount": len(ok_t)})
 
     for d in defects:
+        out_path = args.results / f"{d['id']}.json"
+        if not args.rerun and result_complete(out_path):
+            print(f"{d['id']:<7} skip (result exists)", flush=True)
+            continue
         patch = args.corpus / d["patch"]
         row = {**meta, "date": utc(), "defect": d}
         for cond, wt, base in (("B", WT_B, base_b), ("P", WT_P, base_p)):
@@ -338,8 +380,7 @@ def main(argv: list[str] | None = None) -> int:
             row[cond] = res
         reset_wt(WT_B, base_b)
         reset_wt(WT_P, base_p)
-        (args.results / f"{d['id']}.json").write_text(json.dumps(row, indent=1, ensure_ascii=False) + "\n",
-                                                      encoding="utf-8")
+        write_json(out_path, row)
         b, p = row.get("B", {}), row.get("P", {})
         print(f"{d['id']:<7} B det={b.get('detection', {}).get('detected')} ({b.get('durationSeconds')}s) · "
               f"P det={p.get('detection', {}).get('detected')} block={p.get('blocksDeploy')} "
