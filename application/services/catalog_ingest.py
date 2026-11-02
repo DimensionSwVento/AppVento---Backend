@@ -40,6 +40,10 @@ def _apply(db: Session, model, kwargs_rows: list[dict], destructive: bool) -> in
     else:
         for kw in kwargs_rows:
             db.merge(model(**kw))  # upsert por clave primaria
+    # Las sesiones corren con autoflush=False: sin este flush el COUNT que
+    # registra `data_source.rows` no ve las filas recién cargadas y guarda 0
+    # (#33).
+    db.flush()
     return len(kwargs_rows)
 
 

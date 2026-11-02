@@ -154,7 +154,31 @@ def _ingest(version_id: str, source: str | None) -> None:
                  n_hex, n_var, version_id)
     except Exception as exc:  # noqa: BLE001
         log.exception("Falló la actualización de la master.")
-        repo.update(db, version_id, {"status": "failed", "notes": str(exc)[:500]})
+        # La transacción de la ingesta queda abortada (TRUNCATE/COPY, error de BD):
+        # sin descartarla, el UPDATE del estado falla y la versión se queda en
+        # 'updating' para siempre, bloqueando toda actualización futura (#30).
+        try:
+            db.rollback()
+        except Exception:  # noqa: BLE001
+            log.exception("El rollback de la ingesta falló; se registra el fallo igual.")
+        _record_failure(version_id, str(exc))
+    finally:
+        db.close()
+
+
+def _record_failure(version_id: str, reason: str) -> None:
+    """Deja la versión en `failed` usando una sesión NUEVA.
+
+    La sesión del hilo de ingesta puede haber quedado inutilizable; una conexión
+    limpia garantiza que el fallo quede registrado y la master no se bloquee.
+    """
+    from infrastructure.db.session import SessionLocal
+
+    db = SessionLocal()
+    try:
+        repo.update(db, version_id, {"status": "failed", "notes": reason[:500]})
+    except Exception:  # noqa: BLE001
+        log.exception("No se pudo registrar el fallo de la versión %s.", version_id)
     finally:
         db.close()
 
@@ -172,4 +196,7 @@ def _parse_dt(value: str | None) -> datetime | None:
 
 
 def _label(dt: datetime) -> str:
-    return dt.astimezone(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+    # Con segundos: dos ingestas en el mismo minuto (p. ej. un finalize
+    # reintentado) compartían etiqueta y un informe no podía resolver a una
+    # única versión (#32).
+    return dt.astimezone(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")

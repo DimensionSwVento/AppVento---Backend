@@ -90,7 +90,7 @@ def test_finalize_records_a_ready_master_version_with_counts_and_source(registry
     assert len(versions) == 1
     mv = versions[0]
     assert mv.status == "ready"
-    assert mv.version == out["version"] == "2026-09-12 18:00 UTC"
+    assert mv.version == out["version"] == "2026-09-12 18:00:10 UTC"
     assert mv.source == "variables.h3.parquet"
     assert mv.applied_at is not None
     assert mv.hex_count == db.scalar(select(func.count()).select_from(Hexagon)) == 2

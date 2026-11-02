@@ -11,6 +11,7 @@ FASE C (ingesta real) y la UI viven aparte; esto es el esqueleto que valida el
 esquema de los parquets y expone qué se hará y dónde.
 """
 from __future__ import annotations
+import logging
 import os
 from datetime import datetime, timezone
 
@@ -19,6 +20,8 @@ from sqlalchemy.orm import Session
 
 from infrastructure.db.models import ParquetColumn, DataSource, Hexagon, HexagonMeta
 from infrastructure.data.variable_catalog import base_code
+
+log = logging.getLogger("vento")
 
 # kind (clase) → DÓNDE aterriza en hexagon (para el preview del plan).
 DESTINO: dict[str, str] = {
@@ -563,14 +566,40 @@ def apply(db: Session, root: str, emplazamiento: str = "onshore",
     Postgres). Dos ingestas simultáneas duplican la memoria (cada una carga
     parquets en RAM) → OOM que tumba TODO el backend (mapa/scores incluidos). Si
     ya hay una corriendo, se rechaza; el lock se libera al terminar o si el worker
-    muere (se cae la conexión y Postgres lo suelta solo)."""
-    got = db.scalar(text("SELECT pg_try_advisory_lock(:k)").bindparams(k=_INGEST_LOCK_KEY))
-    if not got:
-        return {"error": "Ya hay una ingesta en curso. Espera a que termine antes de subir otra máster."}
+    muere (se cae la conexión y Postgres lo suelta solo).
+
+    El lock vive en una conexión DEDICADA en autocommit, no en la sesión del
+    request: la sesión devuelve su conexión al pool en cada commit, así que el
+    unlock podía ejecutarse en otra conexión y dejar el lock tomado (#31)."""
+    bind = db.get_bind()
+    lock_conn = getattr(bind, "engine", bind).connect().execution_options(
+        isolation_level="AUTOCOMMIT")
     try:
-        return _apply_impl(db, root, emplazamiento, files, mode)
+        got = lock_conn.execute(
+            text("SELECT pg_try_advisory_lock(:k)").bindparams(k=_INGEST_LOCK_KEY)
+        ).scalar()
+        if not got:
+            return {"error": "Ya hay una ingesta en curso. Espera a que termine antes de subir otra máster."}
+        try:
+            return _apply_impl(db, root, emplazamiento, files, mode)
+        except Exception:
+            # El error deja la sesión abortada: sin descartar la transacción,
+            # el fallo se propaga con la conexión en mal estado (#31).
+            try:
+                db.rollback()
+            except Exception:  # noqa: BLE001
+                log.exception("El rollback de la ingesta de bundle falló.")
+            raise
+        finally:
+            try:
+                lock_conn.execute(
+                    text("SELECT pg_advisory_unlock(:k)").bindparams(k=_INGEST_LOCK_KEY))
+            except Exception:  # noqa: BLE001 — no enmascarar la excepción de la ingesta
+                log.exception("No se pudo liberar el advisory lock de ingesta.")
+                # La conexión muere → Postgres suelta el lock; que no vuelva al pool.
+                lock_conn.invalidate()
     finally:
-        db.execute(text("SELECT pg_advisory_unlock(:k)").bindparams(k=_INGEST_LOCK_KEY))
+        lock_conn.close()
 
 
 def _apply_impl(db: Session, root: str, emplazamiento: str = "onshore",
