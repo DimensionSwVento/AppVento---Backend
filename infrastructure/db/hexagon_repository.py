@@ -20,7 +20,7 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import Session
 
 from domain.models.hexagon import HexagonData
-from infrastructure.db.models import Hexagon, HexagonMeta
+from infrastructure.db.models import Hexagon, HexagonMeta, is_h3_token
 
 # Orden de columnas para la ingesta masiva (COPY / bulk). `updated_at` se fija a un
 # único timestamp por corrida.
@@ -399,6 +399,8 @@ def _pg_row(row: dict) -> dict:
 # ── CRUD ──────────────────────────────────────────────────────────────────────
 
 def get(db: Session, h3_index: str) -> Hexagon | None:
+    if not is_h3_token(h3_index):
+        return None
     return db.get(Hexagon, h3_index)
 
 
@@ -430,6 +432,8 @@ def upsert(db: Session, data: dict) -> Hexagon:
 
 def update(db: Session, h3_index: str, changes: dict) -> Hexagon | None:
     """Actualiza solo los campos presentes en `changes`. None si no existe."""
+    if not is_h3_token(h3_index):
+        return None
     hx = db.get(Hexagon, h3_index)
     if hx is None:
         return None
@@ -449,6 +453,8 @@ def update(db: Session, h3_index: str, changes: dict) -> Hexagon | None:
 
 
 def delete_one(db: Session, h3_index: str) -> bool:
+    if not is_h3_token(h3_index):
+        return False
     hx = db.get(Hexagon, h3_index)
     if hx is None:
         return False

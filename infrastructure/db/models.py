@@ -51,6 +51,22 @@ class H3Index(TypeDecorator):
         return format(int(value), "x")
 
 
+def is_h3_token(value) -> bool:
+    """True si `value` se puede convertir a la clave BIGINT de `H3Index`.
+
+    Los ids que llegan por la API son texto libre: uno que no sea hexadecimal
+    (p. ej. ``"not-a-cell"``) no puede existir en la tabla, así que los
+    repositorios lo tratan como "no encontrado" en vez de dejar que el
+    ``int(..., 16)`` del bind lance ValueError (→ HTTP 500)."""
+    if isinstance(value, int):
+        return True
+    try:
+        int(str(value), 16)
+    except (TypeError, ValueError):
+        return False
+    return True
+
+
 class AppUser(Base):
     """
     Espejo local del usuario de Keycloak (fuente de verdad = Keycloak).

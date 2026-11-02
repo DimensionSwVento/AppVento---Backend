@@ -15,7 +15,7 @@ from sqlalchemy import func, or_, select, text
 from sqlalchemy.orm import Session
 
 from domain.query_engine.source import HexRow
-from infrastructure.db.models import Hexagon, HexagonMeta
+from infrastructure.db.models import Hexagon, HexagonMeta, is_h3_token
 
 # Solo las columnas necesarias (filas ligeras, no objetos ORM completos).
 _COLS = (
@@ -47,6 +47,7 @@ class PostgresHexagonSource:
 
     # ── Por celda ────────────────────────────────────────────────────────────
     def fetch_cells(self, cells: list[str]) -> list[HexRow]:
+        cells = [c for c in cells if is_h3_token(c)]
         if not cells:
             return []
         stmt = select(*_COLS).where(Hexagon.h3_index.in_(cells))
@@ -58,6 +59,7 @@ class PostgresHexagonSource:
         grandes — cada `HexRow` trae el JSONB `variables` completo, así que una
         selección amplia hincharía el pico por request (misma causa que el OOM del
         bbox). Cada lote se procesa y se libera; el llamador solo retiene su salida."""
+        cells = [c for c in cells if is_h3_token(c)]
         if not cells:
             return
         stmt = (
@@ -69,6 +71,8 @@ class PostgresHexagonSource:
             yield _to_row(r)
 
     def fetch_one(self, h3_index: str) -> Optional[HexRow]:
+        if not is_h3_token(h3_index):
+            return None
         stmt = select(*_COLS).where(Hexagon.h3_index == h3_index)
         r = self.db.execute(stmt).first()
         return _to_row(r) if r else None
