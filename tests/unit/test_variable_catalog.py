@@ -20,8 +20,14 @@ def test_dimension_of_known_prefixes():
     assert vc.dimension_of("TEC_001") == "TEC"
     assert vc.dimension_of("AMB_001") == "AMB"
     assert vc.dimension_of("SOE_001") == "SOE"
-    assert vc.dimension_of("MAC_001") == "MAC"
+    assert vc.dimension_of("SOC_001") == "SOC"
+    assert vc.dimension_of("ECO_001") == "ECO"
     assert vc.dimension_of("REG_001") == "REG"
+
+
+def test_dimension_of_macro_prefix_renamed_to_eco():
+    # 4267442: la macro es ECO, no "MAC" — MAC ya no es un prefijo reconocido.
+    assert vc.dimension_of("MAC_001") is None
 
 
 def test_dimension_of_unknown_prefix_is_none():

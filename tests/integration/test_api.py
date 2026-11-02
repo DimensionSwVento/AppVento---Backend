@@ -13,6 +13,7 @@ from fastapi.testclient import TestClient
 
 import main as app_module
 from api import deps
+from application.services import catalog_service
 from infrastructure.db import repository
 from infrastructure.db.session import get_db
 from shared import config
@@ -86,11 +87,22 @@ def test_tiles_require_auth(client):
     assert client.get("/api/tiles/variables").status_code == 401
 
 
-def test_tiles_accept_internal_secret(client):
+def test_tiles_accept_internal_secret(client, monkeypatch):
+    # 4267442: /variables etiqueta desde `catalog_variable` (BD) vía
+    # catalog_service.tile_labels(db) → se sustituye por un catálogo fijo.
+    monkeypatch.setattr(catalog_service, "tile_labels", lambda db: {
+        "TEC_001": {"label": "Velocidad de viento", "dimension": "tecnica",
+                    "dimensionLabel": "Técnica"},
+    })
     resp = client.get("/api/tiles/variables", headers=_auth_headers())
     assert resp.status_code == 200
-    names = {v["name"] for v in resp.json()["variables"]}
-    assert names == {"SOE_001", "TEC_001"}
+    variables = {v["name"]: v for v in resp.json()["variables"]}
+    assert set(variables) == {"SOE_001", "TEC_001"}
+    # Con catálogo en BD se usa el dato real; sin él, fallback al stub.
+    assert variables["TEC_001"]["label"] == "Velocidad de viento"
+    assert variables["TEC_001"]["dimensionLabel"] == "Técnica"
+    assert variables["SOE_001"]["label"] == "SOE 001"
+    assert variables["SOE_001"]["dimension"] == "SOE"
 
 
 def test_missing_sub_with_secret_is_401(client):
@@ -106,7 +118,8 @@ def test_tile_endpoint_returns_compact_hexes(client):
     assert isinstance(body, list)
     assert body  # contiene al menos el hex de Bogotá agregado
     for h in body:
-        assert set(h.keys()) == {"h", "s", "t", "la", "ln", "v"}
+        # 164a718 añadió `off` (mar/tierra) al payload compacto del tile.
+        assert set(h.keys()) == {"h", "s", "t", "la", "ln", "v", "off"}
 
 
 def test_detail_endpoint_found_and_missing(client):
@@ -126,7 +139,9 @@ def test_area_endpoint_returns_scores(client):
     assert len(body) == 1
     assert body[0]["h3_index"] == BOGOTA
     assert body[0]["scores"]["TEC"] == 1.0
-    assert body[0]["scores"]["SOE"] == 1.0
+    # 4267442: SOE se funde con SOC en la dimensión Social.
+    assert body[0]["scores"]["SOC"] == 1.0
+    assert "SOE" not in body[0]["scores"]
 
 
 def test_area_endpoint_requires_polygon_or_hexes(client):

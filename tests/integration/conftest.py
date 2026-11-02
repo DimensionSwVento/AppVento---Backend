@@ -10,14 +10,18 @@ from __future__ import annotations
 
 import os
 import time
+from pathlib import Path
 
 import pytest
-from sqlalchemy import create_engine
+from alembic import command
+from alembic.config import Config
+from sqlalchemy import create_engine, text
 from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import sessionmaker
 
 from infrastructure.db.session import Base
 from infrastructure.db import models  # noqa: F401  (registra los modelos en Base)
+from shared import config as app_config
 
 TEST_DATABASE_URL = os.getenv(
     "TEST_DATABASE_URL",
@@ -40,18 +44,42 @@ def db_engine():
             "PostgreSQL no disponible. Arranca `docker compose up -d db` "
             f"antes de correr los tests de integración ({TEST_DATABASE_URL})."
         )
-    Base.metadata.drop_all(bind=engine)
-    Base.metadata.create_all(bind=engine)
+    _reset_schema(engine)
+    _migrate(TEST_DATABASE_URL)
     yield engine
-    Base.metadata.drop_all(bind=engine)
+    _reset_schema(engine)
     engine.dispose()
+
+
+_REPO_ROOT = Path(__file__).resolve().parents[2]
+
+
+def _reset_schema(engine) -> None:
+    with engine.begin() as conn:
+        conn.execute(text("DROP SCHEMA public CASCADE"))
+        conn.execute(text("CREATE SCHEMA public"))
+
+
+def _migrate(url: str) -> None:
+    """Esquema de test = el de PRODUCCIÓN (`alembic upgrade head`, igual que
+    docker-entrypoint.sh), no `create_all` del metadata ORM: las migraciones fijan
+    `server_default` (p.ej. `hexagon.scores`, 0008) en los que se apoya el COPY de
+    `copy_ingest`, y el PK BIGINT de `h3_index` (0016)."""
+    cfg = Config()  # sin alembic.ini → no reconfigura el logging de pytest
+    cfg.set_main_option("script_location", str(_REPO_ROOT / "migrations"))
+    previous = app_config.DATABASE_URL
+    app_config.DATABASE_URL = url  # migrations/env.py lee la URL de shared.config
+    try:
+        command.upgrade(cfg, "head")
+    finally:
+        app_config.DATABASE_URL = previous
 
 
 @pytest.fixture(autouse=True)
 def _clean_tables(db_engine):
     """Limpia todas las tablas antes de cada test (aislamiento entre tests)."""
     with db_engine.begin() as conn:
-        for table in reversed(Base.metadata.sorted_tables):
+        for table in reversed(Base.metadata.sorted_tables):  # tablas del modelo ORM
             conn.execute(table.delete())
     yield
 

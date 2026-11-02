@@ -5,6 +5,7 @@ sobre el puerto `HexagonSource` (fake en memoria, sin Postgres).
 from __future__ import annotations
 
 import h3
+import pytest
 
 from application.services import tile_service
 from domain.models.hexagon import TileHex
@@ -16,10 +17,12 @@ def _source():
     med = h3.latlng_to_cell(6.24, -75.58, 8)
     lat1, lng1 = h3.cell_to_latlng(bogo)
     lat2, lng2 = h3.cell_to_latlng(med)
+    # `score_general` de la master viene en escala 1–5 (2bb9a21/4267442):
+    # 4.2 → (4.2−1)/4 = 0.8 y 1.8 → 0.2 tras normalizar.
     rows = [
-        hexrow(bogo, score=0.8, lat=lat1, lng=lng1,
+        hexrow(bogo, score=4.2, lat=lat1, lng=lng1,
                variables={"TEC_001": 6.0, "SOE_001": 10.0}),
-        hexrow(med, score=0.2, lat=lat2, lng=lng2,
+        hexrow(med, score=1.8, lat=lat2, lng=lng2,
                variables={"TEC_001": 3.0, "SOE_001": 0.0}),
     ]
     ranges = {"TEC_001": {"min": 0.0, "max": 6.0},
@@ -63,8 +66,9 @@ def test_get_detail_found_and_missing():
     detail = tile_service.get_detail(src, bogo)
     assert detail is not None
     assert detail.h3_index == bogo
-    assert detail.score_general == 0.8
-    assert tile_service.get_detail(src, "missing") is None
+    assert detail.score_general == pytest.approx(0.8)  # 4.2 (1–5) → 0.8
+    missing = h3.latlng_to_cell(10.0, -75.0, 8)  # h3 válido ausente de la fuente
+    assert tile_service.get_detail(src, missing) is None
 
 
 def test_get_tile_shape_and_aggregation():
@@ -92,11 +96,14 @@ def test_get_area_report_scores_per_dimension():
     by_index = {h.h3_index: h for h in out}
     assert len(out) == 2
     # Scores por dimensión = promedio de las variables de esa categoría POR HEX.
+    # SOE se funde con SOC en la dimensión Social (4267442, `_canon_cat`).
+    assert set(by_index[bogo].scores) == {"TEC", "SOC"}
     assert by_index[bogo].scores["TEC"] == 1.0   # 6.0 → 1.0
-    assert by_index[bogo].scores["SOE"] == 1.0   # 10.0 → 1.0
-    assert by_index[bogo].score_general == 0.8
+    assert by_index[bogo].scores["SOC"] == 1.0   # SOE_001 10.0 → 1.0
+    assert by_index[bogo].score_general == 0.8   # 4.2 (1–5) → 0.8
     assert by_index[med].scores["TEC"] == 0.5    # 3.0 → 0.5
-    assert by_index[med].scores["SOE"] == 0.0    # 0.0 → 0.0
+    assert by_index[med].scores["SOC"] == 0.0    # SOE_001 0.0 → 0.0
+    assert by_index[med].score_general == 0.2    # 1.8 (1–5) → 0.2
 
 
 def test_get_area_report_empty_input():

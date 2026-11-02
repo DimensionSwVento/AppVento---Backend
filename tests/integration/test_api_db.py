@@ -43,7 +43,8 @@ def client(session_factory, monkeypatch):
 
 def _seed_hexagons(db):
     lat, lng = h3.cell_to_latlng(BOGOTA)
-    repo.upsert(db, {"h3_index": BOGOTA, "score_general": 0.8, "tipo_celda": "disponible",
+    # `score_general` en escala 1–5 de la master (2bb9a21): 4.2 → 0.8 normalizado.
+    repo.upsert(db, {"h3_index": BOGOTA, "score_general": 4.2, "tipo_celda": "disponible",
                      "lat": lat, "lng": lng, "variables": {"TEC_001": 6.0}})
     db.add(HexagonMeta(variable="TEC_001", vmin=0.0, vmax=6.0))
     db.commit()
@@ -81,7 +82,7 @@ def test_tiles_with_real_source(client, db):
 
     detail = client.get(f"/api/tiles/detail/{BOGOTA}", headers=_headers())
     assert detail.status_code == 200
-    assert detail.json()["score_general"] == 0.8
+    assert detail.json()["score_general"] == pytest.approx(0.8)  # (4.2−1)/4
 
     counts = client.get("/api/tiles/counts", headers=_headers())
     assert counts.status_code == 200
