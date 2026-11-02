@@ -1,0 +1,185 @@
+# RQ2 timing baseline (condition B) — measurement-only workflow.
+#
+# Faithful copy of the jobs of `backend-ci.yml` on origin/develop (lint, unit,
+# build, secrets), with ONE deliberate difference: every job is pinned to
+# ubuntu-24.04, the runner of the protocol workflow, so that the comparison
+# isolates the verification layer instead of mixing it with the runner image
+# (develop's `ubuntu-latest` currently resolves to ubuntu-26.04).
+#
+# It exists only on research/quality-pipeline-v2 and is triggered by a push
+# that touches `.rq2-timing/`. That same push also triggers
+# backend-quality-pipeline.yml (condition P), so each iteration yields one
+# pair of runs on the same product commit.
+#
+# The baseline must run develop's TEST CODE against the research PRODUCT code
+# (same product as P), exactly like quality/experiment/run_corpus.py does
+# locally: tests/ and pyproject.toml are restored from origin/develop and
+# test files that do not exist on develop are removed.
+#
+# gitleaks is kept here (unlike the detection experiment, where it was
+# omitted as irrelevant to functional defects) because timing measures the
+# pipeline the developers actually wait for.
+name: RQ2 Timing Baseline (develop CI)
+
+on:
+  push:
+    paths:
+      - ".rq2-timing/**"
+
+concurrency:
+  group: rq2-timing-baseline-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  lint:
+    name: Lint (ruff)
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout (sin actions de marketplace)
+        run: |
+          git init -q .
+          git remote add origin "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+          git fetch -q --depth 1 origin "$GITHUB_SHA"
+          git checkout -q FETCH_HEAD
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+      - name: Restore develop tests and pyproject (RQ2 baseline)
+        run: |
+          set -euo pipefail
+          git fetch -q --depth 1 origin develop
+          DEV=$(git rev-parse FETCH_HEAD)
+          comm -13 \
+            <(git ls-tree -r --name-only "$DEV" tests | LC_ALL=C sort) \
+            <(git ls-tree -r --name-only HEAD tests | LC_ALL=C sort) > /tmp/rq2-removed-tests.txt
+          git checkout -q "$DEV" -- tests pyproject.toml
+          if [ -s /tmp/rq2-removed-tests.txt ]; then
+            xargs -r rm -f < /tmp/rq2-removed-tests.txt
+          fi
+      - name: Setup Python
+        run: |
+          python3 -m venv .venv
+          .venv/bin/pip install --quiet --upgrade pip
+          .venv/bin/pip install --quiet -r requirements.txt -r requirements-dev.txt
+      - run: .venv/bin/ruff check
+
+  unit:
+    name: Unit + integration tests + coverage
+    runs-on: ubuntu-24.04
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: vento
+          POSTGRES_PASSWORD: vento
+          POSTGRES_DB: vento
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U vento -d vento"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    steps:
+      - name: Checkout (sin actions de marketplace)
+        run: |
+          git init -q .
+          git remote add origin "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+          git fetch -q --depth 1 origin "$GITHUB_SHA"
+          git checkout -q FETCH_HEAD
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+      - name: Restore develop tests and pyproject (RQ2 baseline)
+        run: |
+          set -euo pipefail
+          git fetch -q --depth 1 origin develop
+          DEV=$(git rev-parse FETCH_HEAD)
+          comm -13 \
+            <(git ls-tree -r --name-only "$DEV" tests | LC_ALL=C sort) \
+            <(git ls-tree -r --name-only HEAD tests | LC_ALL=C sort) > /tmp/rq2-removed-tests.txt
+          git checkout -q "$DEV" -- tests pyproject.toml
+          if [ -s /tmp/rq2-removed-tests.txt ]; then
+            xargs -r rm -f < /tmp/rq2-removed-tests.txt
+          fi
+      - name: Setup Python
+        run: |
+          python3 -m venv .venv
+          .venv/bin/pip install --quiet --upgrade pip
+          .venv/bin/pip install --quiet -r requirements.txt -r requirements-dev.txt
+      - name: Run tests with coverage
+        env:
+          TEST_DATABASE_URL: postgresql+psycopg://vento:vento@localhost:5432/vento
+        run: .venv/bin/python -m pytest --cov
+
+  build:
+    name: Build / import smoke
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout (sin actions de marketplace)
+        run: |
+          git init -q .
+          git remote add origin "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+          git fetch -q --depth 1 origin "$GITHUB_SHA"
+          git checkout -q FETCH_HEAD
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+      - name: Restore develop tests and pyproject (RQ2 baseline)
+        run: |
+          set -euo pipefail
+          git fetch -q --depth 1 origin develop
+          DEV=$(git rev-parse FETCH_HEAD)
+          comm -13 \
+            <(git ls-tree -r --name-only "$DEV" tests | LC_ALL=C sort) \
+            <(git ls-tree -r --name-only HEAD tests | LC_ALL=C sort) > /tmp/rq2-removed-tests.txt
+          git checkout -q "$DEV" -- tests pyproject.toml
+          if [ -s /tmp/rq2-removed-tests.txt ]; then
+            xargs -r rm -f < /tmp/rq2-removed-tests.txt
+          fi
+      - name: Setup Python
+        run: |
+          python3 -m venv .venv
+          .venv/bin/pip install --quiet --upgrade pip
+          .venv/bin/pip install --quiet -r requirements.txt -r requirements-dev.txt
+      - name: Compile all
+        run: .venv/bin/python -m compileall -q domain application infrastructure api shared main.py tools
+      - name: Import smoke
+        run: .venv/bin/python -c "import main; import api.routers.tiles; import api.routers.historial; import application.services.tile_service; print('imports ok')"
+
+  secrets:
+    name: Secret scan (gitleaks)
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout (sin actions de marketplace)
+        run: |
+          git init -q .
+          git remote add origin "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+          git fetch -q --depth 1 origin "$GITHUB_SHA"
+          git checkout -q FETCH_HEAD
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+      - name: Restore develop tests and pyproject (RQ2 baseline)
+        run: |
+          set -euo pipefail
+          git fetch -q --depth 1 origin develop
+          DEV=$(git rev-parse FETCH_HEAD)
+          comm -13 \
+            <(git ls-tree -r --name-only "$DEV" tests | LC_ALL=C sort) \
+            <(git ls-tree -r --name-only HEAD tests | LC_ALL=C sort) > /tmp/rq2-removed-tests.txt
+          git checkout -q "$DEV" -- tests pyproject.toml
+          if [ -s /tmp/rq2-removed-tests.txt ]; then
+            xargs -r rm -f < /tmp/rq2-removed-tests.txt
+          fi
+      - name: Instalar gitleaks
+        run: |
+          set -euo pipefail
+          # URL FIJA a la versión (NO `latest/download`, que sirve los assets del
+          # release más nuevo). Se baja a archivo y se valida.
+          wget -q -O gitleaks.tar.gz \
+            https://github.com/gitleaks/gitleaks/releases/download/v8.24.3/gitleaks_8.24.3_linux_x64.tar.gz
+          tar xzf gitleaks.tar.gz -C /usr/local/bin gitleaks
+          gitleaks version
+        working-directory: /tmp
+      - name: Scan de secretos
+        run: gitleaks detect --source . --no-git --redact --config .gitleaks.toml --verbose
