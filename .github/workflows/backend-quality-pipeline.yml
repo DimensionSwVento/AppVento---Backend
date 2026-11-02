@@ -1,0 +1,164 @@
+# Backend Quality Attributes Pipeline.
+#
+# Backend counterpart of AppVento's quality-pipeline.yml. Runs the quality gates
+# declared in quality/gates.json (each serving one attribute of the shared
+# catalog quality/quality-attributes.json), collects their evidence into one
+# bundle, and takes the deterministic deployment decision.
+#
+# This workflow is additive: it does NOT replace backend-ci.yml.
+#
+# NOTE: the organization's Actions policy only allows actions from
+# DimensionSwVento repositories, so this workflow uses no marketplace action
+# (not even actions/checkout, same as backend-ci.yml): checkout is done with
+# git + github.token and Python comes from the runner image. actions/upload-artifact
+# is blocked too, so the evidence bundle is printed into the job log.
+name: Backend Quality Attributes Pipeline
+
+on:
+  workflow_dispatch:
+  push:
+    branches: ["research/quality-pipeline-v2"]
+
+concurrency:
+  group: backend-quality-pipeline-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  # Job 1 of 2: runs the gates, collects the evidence bundle, computes the decision.
+  quality-evidence:
+    name: Quality evidence
+    runs-on: ubuntu-24.04
+    outputs:
+      decision: ${{ steps.collect.outputs.decision }}
+      deploy_allowed: ${{ steps.collect.outputs.deploy_allowed }}
+      reason: ${{ steps.collect.outputs.reason }}
+      blocking_gates: ${{ steps.collect.outputs.blocking_gates }}
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: vento
+          POSTGRES_PASSWORD: vento
+          POSTGRES_DB: vento
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U vento -d vento"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      # The application engine and the test fixtures must point at the same
+      # database: some gates exercise code that opens its own sessions.
+      DATABASE_URL: postgresql+psycopg://vento:vento@localhost:5432/vento
+      TEST_DATABASE_URL: postgresql+psycopg://vento:vento@localhost:5432/vento
+    steps:
+      - name: Checkout (no marketplace actions)
+        run: |
+          git init -q .
+          git remote add origin "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+          git fetch -q --depth 1 origin "$GITHUB_SHA"
+          git checkout -q FETCH_HEAD
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+
+      - name: Setup Python (runner image)
+        run: |
+          python3 --version
+          python3 -m venv .venv
+          .venv/bin/pip install --quiet --upgrade pip
+          .venv/bin/pip install --quiet -r requirements.txt -r requirements-dev.txt
+
+      # Cross-checks the gate inventory against the catalog (unknown attribute
+      # ids, invented catalog tests, unregistered markers) and both against
+      # their JSON schemas. A malformed inventory stops the pipeline here, and
+      # prints the attribute coverage inventory derived from it.
+      - name: Validate catalog and gate inventory
+        run: .venv/bin/python quality/scripts/collect_evidence.py --validate-only
+
+      # Runs every enabled gate and reduces their outputs to one normalized
+      # bundle. The collector never fails the job because a gate failed: a
+      # failed gate is evidence. The decision is written to $GITHUB_OUTPUT.
+      - name: Collect quality evidence and decide
+        id: collect
+        run: .venv/bin/python quality/scripts/collect_evidence.py --run-id "${GITHUB_RUN_ID}"
+
+      - name: Publish evidence bundle
+        if: always()
+        run: |
+          BUNDLE="quality/evidence/run-${GITHUB_RUN_ID}.json"
+          if [ ! -f "$BUNDLE" ]; then echo "No bundle was produced."; exit 0; fi
+          echo "::group::Evidence bundle ($BUNDLE)"
+          cat "$BUNDLE"
+          echo "::endgroup::"
+
+      - name: Publish failing gate logs
+        if: always()
+        run: |
+          DIR="quality/evidence/raw/${GITHUB_RUN_ID}"
+          [ -d "$DIR" ] || exit 0
+          for f in "$DIR"/*.log; do
+            [ -e "$f" ] || continue
+            if grep -qE "(failed|error)" "$f"; then
+              echo "::group::$(basename "$f")"
+              cat "$f"
+              echo "::endgroup::"
+            fi
+          done
+
+  # Job 2 of 2: the deployment gate. Enforces the decision computed above as a
+  # separate, visible node of the pipeline graph. This proof of concept does not
+  # deploy: it allows or blocks a simulated deployment.
+  deployment-gate:
+    name: Deployment gate
+    runs-on: ubuntu-24.04
+    needs: quality-evidence
+    if: always()
+    steps:
+      - name: Enforce the deployment decision
+        env:
+          DECISION: ${{ needs.quality-evidence.outputs.decision }}
+          DEPLOY_ALLOWED: ${{ needs.quality-evidence.outputs.deploy_allowed }}
+          REASON: ${{ needs.quality-evidence.outputs.reason }}
+          BLOCKING_GATES: ${{ needs.quality-evidence.outputs.blocking_gates }}
+        run: |
+          if [ -z "$DECISION" ]; then
+            echo "The quality evidence job produced no decision; treating that as a block."
+            {
+              echo "## Deployment gate"
+              echo ""
+              echo "### BLOCK"
+              echo ""
+              echo "The quality evidence job did not reach the decision stage."
+            } >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+
+          echo "Decision: $DECISION"
+          echo "Reason:   $REASON"
+          { echo "## Deployment gate"; echo ""; } >> "$GITHUB_STEP_SUMMARY"
+
+          if [ "$DEPLOY_ALLOWED" = "true" ]; then
+            {
+              echo "### Deployment allowed"
+              echo ""
+              echo "$REASON"
+              echo ""
+              echo "_Simulated: this proof of concept does not deploy._"
+            } >> "$GITHUB_STEP_SUMMARY"
+            echo "Deployment allowed. This proof of concept does not deploy."
+            exit 0
+          fi
+
+          {
+            echo "### Deployment blocked"
+            echo ""
+            echo "$REASON"
+            echo ""
+            echo "Blocking gates: \`$BLOCKING_GATES\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+          echo "Deployment blocked by: $BLOCKING_GATES"
+          exit 1
