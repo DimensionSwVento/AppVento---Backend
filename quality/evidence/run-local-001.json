@@ -1,0 +1,487 @@
+{
+  "runId": "local-001",
+  "commit": "f25e22cb927310e23a3087701a08e1b37ad28c4f",
+  "timestamp": "2026-11-02T03:47:54.307Z",
+  "workflowDurationMs": 40585,
+  "catalogVersion": "1.0.0",
+  "gatesVersion": "1.0.0",
+  "repository": "AppVento---Backend",
+  "assertionCountNote": "static count of `assert` statements and `pytest.raises` blocks in the body of each executed test function (pytest reports no assertion counts)",
+  "environment": {
+    "ci": false,
+    "workflow": null,
+    "ref": null,
+    "python": "3.10.12"
+  },
+  "gates": [
+    {
+      "gateId": "ruff-lint",
+      "attributeId": "processing",
+      "blocking": true,
+      "status": "passed",
+      "testsRun": 1,
+      "testsPassed": 1,
+      "assertions": 0,
+      "durationMs": 23,
+      "logExcerpt": "Command 'python -m ruff check' exited 0.",
+      "artifacts": [
+        "quality/evidence/raw/local-001/ruff-lint.log"
+      ]
+    },
+    {
+      "gateId": "spatial-processing-tests",
+      "attributeId": "processing",
+      "blocking": true,
+      "status": "passed",
+      "testsRun": 50,
+      "testsPassed": 50,
+      "assertions": 98,
+      "durationMs": 3078,
+      "logExcerpt": "50/50 test cases passed across 7 file(s).",
+      "artifacts": [
+        "quality/evidence/raw/local-001/spatial-processing-tests.xml",
+        "quality/evidence/raw/local-001/spatial-processing-tests.log"
+      ]
+    },
+    {
+      "gateId": "data-source-availability-tests",
+      "attributeId": "availability",
+      "blocking": true,
+      "status": "failed",
+      "testsRun": 28,
+      "testsPassed": 27,
+      "assertions": 89,
+      "durationMs": 8985,
+      "logExcerpt": "27/28 test cases passed; 1 failed:\n- tests.integration.test_availability::test_health_stays_responsive_while_a_master_ingest_is_running [failed] AssertionError: /api/health did not answer within 5.0s while a master ingest was running",
+      "artifacts": [
+        "quality/evidence/raw/local-001/data-source-availability-tests.xml",
+        "quality/evidence/raw/local-001/data-source-availability-tests.log"
+      ]
+    },
+    {
+      "gateId": "bundle-integration-tests",
+      "attributeId": "data-integration",
+      "blocking": true,
+      "status": "passed",
+      "testsRun": 17,
+      "testsPassed": 17,
+      "assertions": 73,
+      "durationMs": 3616,
+      "logExcerpt": "17/17 test cases passed across 4 file(s).",
+      "artifacts": [
+        "quality/evidence/raw/local-001/bundle-integration-tests.xml",
+        "quality/evidence/raw/local-001/bundle-integration-tests.log"
+      ]
+    },
+    {
+      "gateId": "reference-result-tests",
+      "attributeId": "result-quality",
+      "blocking": true,
+      "status": "passed",
+      "testsRun": 7,
+      "testsPassed": 7,
+      "assertions": 22,
+      "durationMs": 2240,
+      "logExcerpt": "7/7 test cases passed across 1 file(s).",
+      "artifacts": [
+        "quality/evidence/raw/local-001/reference-result-tests.xml",
+        "quality/evidence/raw/local-001/reference-result-tests.log"
+      ]
+    },
+    {
+      "gateId": "auth-rbac-tests",
+      "attributeId": "security",
+      "blocking": true,
+      "status": "passed",
+      "testsRun": 18,
+      "testsPassed": 18,
+      "assertions": 32,
+      "durationMs": 2865,
+      "logExcerpt": "18/18 test cases passed across 3 file(s).",
+      "artifacts": [
+        "quality/evidence/raw/local-001/auth-rbac-tests.xml",
+        "quality/evidence/raw/local-001/auth-rbac-tests.log"
+      ]
+    },
+    {
+      "gateId": "spatial-data-quality-tests",
+      "attributeId": "data-quality",
+      "blocking": true,
+      "status": "passed",
+      "testsRun": 24,
+      "testsPassed": 24,
+      "assertions": 38,
+      "durationMs": 2265,
+      "logExcerpt": "24/24 test cases passed across 4 file(s).",
+      "artifacts": [
+        "quality/evidence/raw/local-001/spatial-data-quality-tests.xml",
+        "quality/evidence/raw/local-001/spatial-data-quality-tests.log"
+      ]
+    },
+    {
+      "gateId": "api-contract-tests",
+      "attributeId": "interoperability",
+      "blocking": true,
+      "status": "passed",
+      "testsRun": 16,
+      "testsPassed": 16,
+      "assertions": 60,
+      "durationMs": 4041,
+      "logExcerpt": "16/16 test cases passed across 5 file(s).",
+      "artifacts": [
+        "quality/evidence/raw/local-001/api-contract-tests.xml",
+        "quality/evidence/raw/local-001/api-contract-tests.log"
+      ]
+    },
+    {
+      "gateId": "traceability-tests",
+      "attributeId": "traceability-auditability",
+      "blocking": true,
+      "status": "failed",
+      "testsRun": 8,
+      "testsPassed": 6,
+      "assertions": 40,
+      "durationMs": 4462,
+      "logExcerpt": "6/8 test cases passed; 2 failed:\n- tests.integration.test_traceability::test_master_version_labels_identify_a_single_version [failed] AssertionError: two dataset versions share the label '2026-09-12 18:00 UTC'\n- tests.integration.test_traceability::test_catalog_document_lineage_records_the_ingested_row_count [failed] AssertionError: assert 0 == 3",
+      "artifacts": [
+        "quality/evidence/raw/local-001/traceability-tests.xml",
+        "quality/evidence/raw/local-001/traceability-tests.log"
+      ]
+    },
+    {
+      "gateId": "fault-injection-tests",
+      "attributeId": "resilience",
+      "blocking": true,
+      "status": "failed",
+      "testsRun": 9,
+      "testsPassed": 7,
+      "assertions": 25,
+      "durationMs": 3739,
+      "logExcerpt": "7/9 test cases passed; 2 failed:\n- tests.integration.test_resilience::test_failed_master_update_is_recorded_and_does_not_block_the_next_one [failed] AssertionError: version left in status 'updating'\n- tests.integration.test_resilience::test_failed_bundle_ingest_releases_the_ingest_lock [failed] AssertionError: ingest lock still held after the failed ingest",
+      "artifacts": [
+        "quality/evidence/raw/local-001/fault-injection-tests.xml",
+        "quality/evidence/raw/local-001/fault-injection-tests.log"
+      ]
+    },
+    {
+      "gateId": "provenance-license-tests",
+      "attributeId": "geoethics",
+      "blocking": true,
+      "status": "failed",
+      "testsRun": 3,
+      "testsPassed": 2,
+      "assertions": 10,
+      "durationMs": 3066,
+      "logExcerpt": "2/3 test cases passed; 1 failed:\n- tests.integration.test_geoethics::test_no_variable_is_served_without_origin_and_license [failed] AssertionError: variables served without provenance/license:",
+      "artifacts": [
+        "quality/evidence/raw/local-001/provenance-license-tests.xml",
+        "quality/evidence/raw/local-001/provenance-license-tests.log"
+      ]
+    }
+  ],
+  "partition": {
+    "collectedTests": 180,
+    "executedInGates": 180,
+    "unassigned": 0
+  },
+  "coverage": {
+    "lines": 64.72,
+    "branches": 43.16,
+    "source": "pytest-cov (coverage.py), union of all pytest gates",
+    "artifact": "quality/evidence/raw/local-001/coverage.json"
+  },
+  "audit": {
+    "critical": 0,
+    "high": 0,
+    "moderate": 0,
+    "low": 0
+  },
+  "auditNote": "the backend inventory declares no dependency-audit gate; these counts are not measured",
+  "attributeCoverage": {
+    "totalAttributes": 13,
+    "strongCoverageMinRatio": 0.5,
+    "covered": [
+      "processing",
+      "availability",
+      "data-integration",
+      "result-quality",
+      "security",
+      "data-quality",
+      "interoperability",
+      "traceability-auditability",
+      "resilience",
+      "geoethics"
+    ],
+    "uncovered": [
+      "performance",
+      "scalability",
+      "usability-geospatial"
+    ],
+    "stronglyCovered": [
+      "processing",
+      "availability",
+      "data-integration",
+      "result-quality",
+      "security",
+      "data-quality",
+      "interoperability",
+      "traceability-auditability",
+      "resilience",
+      "geoethics"
+    ],
+    "weaklyCovered": [],
+    "perAttribute": [
+      {
+        "attributeId": "processing",
+        "name": "Processing",
+        "status": "covered",
+        "gateIds": [
+          "ruff-lint",
+          "spatial-processing-tests"
+        ],
+        "implementedTests": [
+          "CRS consistency tests",
+          "reproducibility tests",
+          "spatial unit tests (vector/raster)"
+        ],
+        "missingTests": [
+          "geometric precision tests"
+        ],
+        "catalogTestCount": 4,
+        "implementedTestRatio": 0.75
+      },
+      {
+        "attributeId": "availability",
+        "name": "Availability",
+        "status": "covered",
+        "gateIds": [
+          "data-source-availability-tests"
+        ],
+        "implementedTests": [
+          "GIS service recovery tests",
+          "connectivity tests to data sources"
+        ],
+        "missingTests": [
+          "fault tolerance tests"
+        ],
+        "catalogTestCount": 3,
+        "implementedTestRatio": 0.6667
+      },
+      {
+        "attributeId": "data-integration",
+        "name": "Data Integration",
+        "status": "covered",
+        "gateIds": [
+          "bundle-integration-tests"
+        ],
+        "implementedTests": [
+          "metadata validation",
+          "multi-source integration",
+          "semantic consistency"
+        ],
+        "missingTests": [
+          "vector-raster compatibility"
+        ],
+        "catalogTestCount": 4,
+        "implementedTestRatio": 0.75
+      },
+      {
+        "attributeId": "performance",
+        "name": "Performance",
+        "status": "uncovered",
+        "gateIds": [],
+        "implementedTests": [],
+        "missingTests": [
+          "layer loading time",
+          "map rendering",
+          "spatial query latency"
+        ],
+        "catalogTestCount": 3,
+        "implementedTestRatio": 0.0
+      },
+      {
+        "attributeId": "result-quality",
+        "name": "Result Quality",
+        "status": "covered",
+        "gateIds": [
+          "reference-result-tests"
+        ],
+        "implementedTests": [
+          "topological consistency",
+          "validation against reference data"
+        ],
+        "missingTests": [
+          "uncertainty analysis"
+        ],
+        "catalogTestCount": 3,
+        "implementedTestRatio": 0.6667
+      },
+      {
+        "attributeId": "security",
+        "name": "Security",
+        "status": "covered",
+        "gateIds": [
+          "auth-rbac-tests"
+        ],
+        "implementedTests": [
+          "GIS API security",
+          "layer access control protection"
+        ],
+        "missingTests": [
+          "sensitive data",
+          "spatial integrity"
+        ],
+        "catalogTestCount": 4,
+        "implementedTestRatio": 0.5
+      },
+      {
+        "attributeId": "data-quality",
+        "name": "Data Quality",
+        "status": "covered",
+        "gateIds": [
+          "spatial-data-quality-tests"
+        ],
+        "implementedTests": [
+          "metadata validation",
+          "spatial completeness tests"
+        ],
+        "missingTests": [
+          "positional accuracy tests",
+          "temporal consistency tests"
+        ],
+        "catalogTestCount": 4,
+        "implementedTestRatio": 0.5
+      },
+      {
+        "attributeId": "scalability",
+        "name": "Scalability",
+        "status": "uncovered",
+        "gateIds": [],
+        "implementedTests": [],
+        "missingTests": [
+          "load tests with increasing datasets",
+          "resolution increase tests (raster)",
+          "concurrent user tests",
+          "horizontal/vertical scaling tests"
+        ],
+        "catalogTestCount": 4,
+        "implementedTestRatio": 0.0
+      },
+      {
+        "attributeId": "interoperability",
+        "name": "Interoperability",
+        "status": "covered",
+        "gateIds": [
+          "api-contract-tests"
+        ],
+        "implementedTests": [
+          "import/export format testing",
+          "standards and schema validation"
+        ],
+        "missingTests": [
+          "OGC services testing",
+          "integration with external systems"
+        ],
+        "catalogTestCount": 4,
+        "implementedTestRatio": 0.5
+      },
+      {
+        "attributeId": "usability-geospatial",
+        "name": "Usability (Geospatial)",
+        "status": "uncovered",
+        "gateIds": [],
+        "implementedTests": [],
+        "missingTests": [
+          "cartographic comprehension tests",
+          "spatial cognitive load tests",
+          "symbology and scale evaluation",
+          "accessibility testing"
+        ],
+        "catalogTestCount": 4,
+        "implementedTestRatio": 0.0
+      },
+      {
+        "attributeId": "traceability-auditability",
+        "name": "Traceability and Auditability",
+        "status": "covered",
+        "gateIds": [
+          "traceability-tests"
+        ],
+        "implementedTests": [
+          "data versioning tests",
+          "historical reproducibility of results",
+          "spatial data lineage tests"
+        ],
+        "missingTests": [
+          "decision flow auditing"
+        ],
+        "catalogTestCount": 4,
+        "implementedTestRatio": 0.75
+      },
+      {
+        "attributeId": "resilience",
+        "name": "Resilience",
+        "status": "covered",
+        "gateIds": [
+          "fault-injection-tests"
+        ],
+        "implementedTests": [
+          "controlled failure tests (fault injection)",
+          "recovery testing"
+        ],
+        "missingTests": [
+          "stress recovery scenarios"
+        ],
+        "catalogTestCount": 3,
+        "implementedTestRatio": 0.6667
+      },
+      {
+        "attributeId": "geoethics",
+        "name": "Geoethics",
+        "status": "covered",
+        "gateIds": [
+          "provenance-license-tests"
+        ],
+        "implementedTests": [
+          "data origin validation",
+          "license validation"
+        ],
+        "missingTests": [
+          "data consent and usage tests"
+        ],
+        "catalogTestCount": 3,
+        "implementedTestRatio": 0.6667
+      }
+    ]
+  },
+  "analysis": null,
+  "deployment": {
+    "decision": "block",
+    "reason": "4 blocking quality gate(s) did not pass.",
+    "blockingFailures": [
+      {
+        "gateId": "data-source-availability-tests",
+        "attributeId": "availability",
+        "reason": "blocking gate failed (27/28 test cases passed)"
+      },
+      {
+        "gateId": "traceability-tests",
+        "attributeId": "traceability-auditability",
+        "reason": "blocking gate failed (6/8 test cases passed)"
+      },
+      {
+        "gateId": "fault-injection-tests",
+        "attributeId": "resilience",
+        "reason": "blocking gate failed (7/9 test cases passed)"
+      },
+      {
+        "gateId": "provenance-license-tests",
+        "attributeId": "geoethics",
+        "reason": "blocking gate failed (2/3 test cases passed)"
+      }
+    ],
+    "warnings": [],
+    "evaluatedAt": "2026-11-02T03:47:54.718Z",
+    "rule": "deterministic; the generative analysis explains a block but never causes or lifts one"
+  }
+}
