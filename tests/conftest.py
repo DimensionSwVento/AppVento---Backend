@@ -29,14 +29,24 @@ class FakeHexagonSource:
         return self._rows.get(h3_index)
 
     def fetch_bbox(self, west: float, south: float, east: float,
-                   north: float) -> list[HexRow]:
+                   north: float, include_variables: bool = True) -> list[HexRow]:
+        # El fake no modela la proyección liviana (Fase C2): siempre devuelve
+        # `variables` completo; el flag se acepta solo para no romper la firma.
         return [
             r for r in self._rows.values()
             if south <= r.lat <= north and west <= r.lng <= east
         ]
 
-    def stream_bbox(self, west: float, south: float, east: float, north: float):
-        yield from self.fetch_bbox(west, south, east, north)
+    def stream_bbox(self, west: float, south: float, east: float, north: float,
+                     include_variables: bool = True):
+        yield from self.fetch_bbox(west, south, east, north, include_variables)
+
+    def fetch_resolution_mv(self, res: int, west: float, south: float,
+                             east: float, north: float) -> list[HexRow] | None:
+        # El fake no modela las vistas materializadas (Fase C5): siempre `None`
+        # → el llamador cae al camino de siempre (stream_bbox + agregación en
+        # Python), que el resto de este fake sí soporta.
+        return None
 
     def stream_cells(self, cells: list[str]):
         yield from self.fetch_cells(cells)

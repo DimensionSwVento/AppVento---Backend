@@ -41,13 +41,37 @@ class HexagonSource(Protocol):
         """Un hexágono por su índice (detalle)."""
         ...
 
-    def fetch_bbox(self, west: float, south: float, east: float, north: float) -> list[HexRow]:
-        """Hexágonos dentro del bounding box (tiles)."""
+    def fetch_bbox(
+        self, west: float, south: float, east: float, north: float,
+        include_variables: bool = True,
+    ) -> list[HexRow]:
+        """Hexágonos dentro del bounding box (tiles). `include_variables=False`
+        (Fase C2) omite el JSONB `variables` cuando el llamador no lo necesita
+        (p.ej. la cuadrícula base sin variable ni mar/tierra activos) — fila
+        más liviana para la consulta de mayor frecuencia (cada pan/zoom)."""
         ...
 
-    def stream_bbox(self, west: float, south: float, east: float, north: float) -> Iterable[HexRow]:
+    def stream_bbox(
+        self, west: float, south: float, east: float, north: float,
+        include_variables: bool = True,
+    ) -> Iterable[HexRow]:
         """Como `fetch_bbox` pero en STREAMING (no materializa el bbox en RAM) —
         para agregar la capa de una variable sobre zonas grandes sin OOM."""
+        ...
+
+    def fetch_resolution_mv(
+        self, res: int, west: float, south: float, east: float, north: float,
+    ) -> Optional[list[HexRow]]:
+        """Fase C5: atajo por vista materializada (`mv_hexagon_res5`/`res6`,
+        Fase C3) para resoluciones agregadas que YA están precomputadas. Evita
+        leer y promediar en caliente miles/millones de filas `hexagon` res8 por
+        request (la causa original de la caída de `/tiles/variables-bulk`).
+
+        Devuelve `None` si `res` NO tiene vista precomputada (el llamador debe
+        usar `stream_bbox` + agregación en Python, el camino de siempre). Una
+        lista (posiblemente vacía) si SÍ hay vista para esa `res` — cada
+        `HexRow.variables` ya viene como el PROMEDIO numérico por variable
+        sobre los hijos de esa celda padre (no el detalle exacto)."""
         ...
 
     def variable_names(self) -> list[str]:

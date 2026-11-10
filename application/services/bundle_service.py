@@ -408,6 +408,13 @@ def finalize(db: Session, root: str, files: list[str] | None = None,
     mv = master_service.record_ingest(
         db, source=filenames, hex_count=hex_count, var_count=var_count
     )
+
+    # Fase C4: refresca las vistas por resolución UNA vez (no por cada chunk).
+    # La ingesta por paquetes escribe sobre la MISMA tabla `hexagon` (UPSERT,
+    # sin recrearla) → REFRESH simple, no `recreate_resolution_mvs`.
+    from infrastructure.db import hexagon_repository as hexrepo  # noqa: PLC0415
+    hexrepo.refresh_resolution_mvs(db)
+
     return {
         "version": mv["version"],
         "appliedAt": mv["appliedAt"],

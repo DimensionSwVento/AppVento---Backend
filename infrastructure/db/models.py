@@ -150,6 +150,12 @@ class Hexagon(Base):
     scores: Mapped[dict] = mapped_column(JSONB, default=dict)
     # Emplazamiento del bundle de origen (onshore ahora; offshore = bundle futuro).
     emplazamiento: Mapped[str] = mapped_column(String, default="onshore", index=True)
+    # Fase C1 (rendimiento): celda PADRE en res5/res6, calculada en la ingesta
+    # (`_h3_parent_bigint`, Python — no depende de la extensión h3-pg). Alimenta
+    # el GROUP BY de las vistas materializadas `mv_hexagon_res5`/`res6` (Fase C3)
+    # y el enrutamiento por resolución del repositorio (Fase C5).
+    h3_res5: Mapped[str | None] = mapped_column(H3Index, nullable=True, index=True)
+    h3_res6: Mapped[str | None] = mapped_column(H3Index, nullable=True, index=True)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=_now, onupdate=_now
     )

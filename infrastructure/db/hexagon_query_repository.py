@@ -3,7 +3,8 @@ Implementación Postgres del puerto `HexagonSource` (domain/query_engine/source)
 
 Consulta la tabla `hexagon` POR REQUEST — nada se carga a memoria al arrancar.
 - área/detalle → `WHERE h3_index = ANY(:celdas)` / `= :h` (usan la PK: O(log n)).
-- tiles        → `WHERE lat BETWEEN … AND lng BETWEEN …` (btree en lat/lng).
+- tiles        → `WHERE geom && ST_MakeEnvelope(...)` (índice espacial GiST
+  sobre `geom`, PostGIS — migración 0017; antes rango btree en lat/lng).
 - variables/rangos → tabla `hexagon_meta` (diminuta, precalculada en la ingesta).
 
 Se instancia por request con la sesión de FastAPI (`Depends(get_db)`).
@@ -26,16 +27,32 @@ _COLS = (
     Hexagon.lng,
     Hexagon.variables,
 )
+# Fase C2 (liviana): igual que `_COLS` pero SIN `variables` — el campo más
+# pesado de la fila (JSONB con decenas de claves). `get_tile` (la cuadrícula
+# base, la consulta de MAYOR frecuencia: cada pan/zoom, para TODOS los tiles
+# visibles) no necesita `variables` salvo que pida una variable puntual (`var`)
+# o haya variable de mar/tierra configurada (`OFFSHORE_VAR`) — en el caso común
+# (ninguna de las dos) evita traer el JSONB para cada fila del bbox.
+_COLS_LIGHT = (
+    Hexagon.h3_index,
+    Hexagon.score_general,
+    Hexagon.tipo_celda,
+    Hexagon.lat,
+    Hexagon.lng,
+)
 
 
 def _to_row(r) -> HexRow:
+    # `r` trae 6 columnas (`_COLS`, con variables) o 5 (`_COLS_LIGHT`, sin
+    # variables) según qué constante se usó en el SELECT que lo originó.
+    has_variables = len(r) > 5
     return HexRow(
         h3_index=r[0],
         score_general=r[1] or 0.0,
         tipo_celda=r[2] or "disponible",
         lat=r[3] if r[3] is not None else 0.0,
         lng=r[4] if r[4] is not None else 0.0,
-        variables=r[5] or {},
+        variables=(r[5] or {}) if has_variables else {},
     )
 
 
@@ -85,30 +102,81 @@ class PostgresHexagonSource:
         return {h3: (vp or {}) for h3, vp in self.db.execute(stmt)}
 
     # ── Por bbox (tiles) ─────────────────────────────────────────────────────
-    def fetch_bbox(self, west: float, south: float, east: float, north: float) -> list[HexRow]:
-        stmt = select(*_COLS).where(
-            Hexagon.lat >= south, Hexagon.lat <= north,
-            Hexagon.lng >= west,  Hexagon.lng <= east,
+    # Filtro ESPACIAL (PostGIS, migración 0017): `geom && ST_MakeEnvelope(...)`
+    # usa el índice GiST `idx_hexagon_geom` (bounding-box overlap, O(log n) real)
+    # en vez del rango btree sobre `lat`/`lng`. `lat`/`lng` siguen en `_COLS`
+    # (se devuelven en la fila), solo cambia la condición del WHERE.
+    _BBOX_PREDICATE = text(
+        "geom && ST_MakeEnvelope(:west, :south, :east, :north, 4326)"
+    )
+
+    def fetch_bbox(
+        self, west: float, south: float, east: float, north: float,
+        include_variables: bool = True,
+    ) -> list[HexRow]:
+        cols = _COLS if include_variables else _COLS_LIGHT
+        stmt = (
+            select(*cols)
+            .where(self._BBOX_PREDICATE)
+            .params(west=west, south=south, east=east, north=north)
         )
         return [_to_row(r) for r in self.db.execute(stmt)]
 
-    def stream_bbox(self, west: float, south: float, east: float, north: float):
+    def stream_bbox(
+        self, west: float, south: float, east: float, north: float,
+        include_variables: bool = True,
+    ):
         """Como `fetch_bbox` pero STREAMING (cursor de servidor + `yield_per`): NO
         materializa todo el bbox en RAM. Para agregar la capa de una variable sobre
         zonas grandes sin reventar la memoria (causa del OOM en `/tiles/variable`).
-        Cada lote se procesa y se libera; el llamador solo retiene el agregado."""
+        Cada lote se procesa y se libera; el llamador solo retiene el agregado.
+
+        `include_variables=False` (Fase C2): omite el JSONB `variables` cuando el
+        llamador no lo necesita — la cuadrícula base (`get_tile`) no lo usa salvo
+        variable puntual o mar/tierra configurado, y es la consulta de mayor
+        frecuencia (cada pan/zoom, para todos los tiles visibles)."""
+        cols = _COLS if include_variables else _COLS_LIGHT
         stmt = (
-            select(*_COLS)
-            .where(
-                Hexagon.lat >= south, Hexagon.lat <= north,
-                Hexagon.lng >= west,  Hexagon.lng <= east,
-            )
+            select(*cols)
+            .where(self._BBOX_PREDICATE)
+            .params(west=west, south=south, east=east, north=north)
             # lote pequeño: cada HexRow trae el JSONB `variables` completo; en un
             # server chico (~2 GB) un yield_per grande hincha el pico por request.
             .execution_options(stream_results=True, yield_per=5_000)
         )
         for r in self.db.execute(stmt):
             yield _to_row(r)
+
+    # ── Vistas materializadas por resolución (Fase C5) ───────────────────────
+    # Nombre de tabla fijo (nunca viene de input externo) → interpolar en el SQL
+    # es seguro (no hay forma de inyectar vía `res`, que solo puede ser 5 o 6
+    # para pegar aquí; cualquier otro valor cae al `None` de abajo).
+    _RES_TO_MV = {5: "mv_hexagon_res5", 6: "mv_hexagon_res6"}
+
+    def fetch_resolution_mv(
+        self, res: int, west: float, south: float, east: float, north: float,
+    ) -> Optional[list[HexRow]]:
+        mv = self._RES_TO_MV.get(res)
+        if mv is None:
+            return None  # sin vista precomputada para esta resolución
+        # Pocas filas (miles, no millones) → un scan con filtro lat/lng alcanza;
+        # no hace falta geom/GiST en la vista (ver migración 0019).
+        stmt = text(
+            f"SELECT h3_index, score_general, is_excluded, lat, lng, variables "
+            f"FROM {mv} WHERE lat BETWEEN :south AND :north "
+            f"AND lng BETWEEN :west AND :east"
+        ).bindparams(west=west, south=south, east=east, north=north)
+        out: list[HexRow] = []
+        for h3_index, score_general, is_excluded, lat, lng, variables in self.db.execute(stmt):
+            out.append(HexRow(
+                h3_index=h3_index,
+                score_general=score_general or 0.0,
+                tipo_celda="excluida" if is_excluded else "disponible",
+                lat=lat if lat is not None else 0.0,
+                lng=lng if lng is not None else 0.0,
+                variables=variables or {},
+            ))
+        return out
 
     # ── Excluidos (capa completa, una sola petición) ─────────────────────────
     def excluded_cells(self) -> list[str]:
