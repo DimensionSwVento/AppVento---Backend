@@ -129,7 +129,12 @@ def get_tile(source: HexagonSource, z: int, x: int, y: int,
     # STREAMING (no materializa el bbox): a zoom bajo un tile abarca millones de
     # hexágonos res 8 → `fetch_bbox` los cargaba todos en RAM y disparaba el OOM
     # del mapa. `aggregate` consume el generador y solo retiene los padres del zoom.
-    rows = source.stream_bbox(west, south, east, north)         # base (res 8) en el bbox
+    # Fase C2: esta es la consulta de MAYOR frecuencia (cada pan/zoom, todos los
+    # tiles visibles). Solo se necesita `variables` por hex si se pide un valor
+    # puntual (`var`) o si hay variable de mar/tierra configurada (`OFFSHORE_VAR`,
+    # vacía por defecto) — en el caso común, se omite el JSONB más pesado de la fila.
+    need_variables = bool(var) or bool(OFFSHORE_VAR)
+    rows = source.stream_bbox(west, south, east, north, include_variables=need_variables)
 
     target_res = zoom_to_h3_res(z)
     hexes = aggregator.aggregate(rows, target_res)              # agrupa a la res del zoom
@@ -274,10 +279,23 @@ def get_variable_layer(source: HexagonSource, code: str,
     if is_sub:
         log.info("tiles/variable: '%s' no reconocido → subtemplate '%s'.", code, eff_code)
     var_range = source.variable_range(eff_code)
-    rows = source.stream_bbox(b["west"], b["south"], b["east"], b["north"])
 
     if res is not None:
-        # Agrega al padre `res` sobre la marcha: solo el dict agregado vive en RAM.
+        # Fase C5: si hay vista materializada para esta `res` (5 o 6), usarla
+        # directo — ya viene agregada (promedio precalculado en el refresh de
+        # la ingesta, Fase C3/C4), sin tocar `hexagon`/variables en el request.
+        mv_rows = source.fetch_resolution_mv(res, b["west"], b["south"], b["east"], b["north"])
+        if mv_rows is not None:
+            out = []
+            for hx in mv_rows:
+                _, v = variable_engine.resolve_value(hx, eff_code, available, var_range, "normalized")
+                if v is None or v < threshold:
+                    continue
+                out.append({"h3_index": hx.h3_index, "value": v})
+            return out
+        # Sin vista para esta `res` (p.ej. res 7 u 8): camino de siempre — stream
+        # + agrega al padre sobre la marcha (solo el dict agregado vive en RAM).
+        rows = source.stream_bbox(b["west"], b["south"], b["east"], b["north"])
         agg: dict[str, tuple[float, int]] = {}
         for hx in rows:
             _, v = variable_engine.resolve_value(hx, eff_code, available, var_range, "normalized")
@@ -290,6 +308,8 @@ def get_variable_layer(source: HexagonSource, code: str,
             s, c = agg.get(parent, (0.0, 0))
             agg[parent] = (s + v, c + 1)
         return [{"h3_index": p, "value": s / c} for p, (s, c) in agg.items()]
+
+    rows = source.stream_bbox(b["west"], b["south"], b["east"], b["north"])
 
     out: list[dict] = []
     for hx in rows:
@@ -327,6 +347,21 @@ def get_variable_layers(source: HexagonSource, codes: list[str],
     if not resolved:
         return result
 
+    # Fase C5: igual atajo por vista materializada que `get_variable_layer`.
+    # Cada fila de la MV ya es una celda padre con su promedio por variable —
+    # no hace falta volver a agrupar por `res`, solo resolver cada código.
+    mv_rows = source.fetch_resolution_mv(res, b["west"], b["south"], b["east"], b["north"]) \
+        if res is not None else None
+    if mv_rows is not None:
+        for hx in mv_rows:
+            for code, (eff_code, var_range) in resolved.items():
+                _, v = variable_engine.resolve_value(hx, eff_code, available, var_range, "normalized")
+                if v is None or v < threshold:
+                    continue
+                result[code].append({"h3_index": hx.h3_index, "value": v})
+        return result
+
+    # Sin vista para esta `res` (o `res is None`): camino de siempre.
     rows = source.stream_bbox(b["west"], b["south"], b["east"], b["north"])
     # agg[code] = {parent: (suma, conteo)}  (solo el agregado vive en RAM)
     agg: dict[str, dict[str, tuple[float, int]]] = {c: {} for c in resolved}

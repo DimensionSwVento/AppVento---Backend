@@ -1,3 +1,5 @@
+import os
+
 from fastapi import APIRouter, Depends, HTTPException, Query, Body
 from fastapi.responses import JSONResponse
 from typing import Optional
@@ -16,6 +18,43 @@ router = APIRouter(prefix="/tiles", tags=["tiles"])
 # Autenticación obligatoria (no configurable): todos los endpoints de datos exigen
 # identidad verificada. Solo `warmup`/`health` quedan abiertos por diseño.
 _auth = [Depends(require_user)]
+
+# ── Fase A (fusible anti-OOM por zoom-out) ────────────────────────────────────
+# Las capas de variable en resolución 8 (detalle máximo) no pueden abarcar un área
+# grande: un bbox nacional desempaqueta cientos de miles de JSONB (>500 MB) y tumba
+# el worker de 2 GB. Regla: en res 8 el área visible se acota; para ver zonas grandes
+# el cliente pide una resolución AGREGADA (`res` < 8), que lee ~N hexes resumidos.
+# El tope es configurable por env para calibrarlo por máquina sin redeploy.
+MAX_BBOX_AREA_DEG = float(os.getenv("MAX_BBOX_AREA_DEG", "2.25"))  # ~1.5°×1.5° (depto. mediano)
+
+
+def _guard_bbox_area(bbox: Optional[dict], res: Optional[int]) -> None:
+    """Rechaza (400) un escaneo en resolución 8 sobre un área demasiado grande.
+
+    - `res` < 8 → agregación al hexágono padre: memoria acotada, siempre permitido.
+    - `res` None o ≥ 8 → detalle máximo: exige bbox y que su área ≤ MAX_BBOX_AREA_DEG.
+    bbox = {west, south, east, north} en grados.
+    """
+    if res is not None and res < 8:
+        return
+    if not bbox:
+        raise HTTPException(
+            status_code=400,
+            detail="Petición en resolución máxima sin 'bbox'. Especifique 'res' (resolución "
+                   "agregada) o un 'bbox' acotado.",
+        )
+    try:
+        lng_span = abs(float(bbox["east"]) - float(bbox["west"]))
+        lat_span = abs(float(bbox["north"]) - float(bbox["south"]))
+    except (KeyError, TypeError, ValueError):
+        return  # bbox mal formado: que lo valide el servicio aguas abajo
+    if lng_span * lat_span > MAX_BBOX_AREA_DEG:
+        raise HTTPException(
+            status_code=400,
+            detail=f"El área visible excede el límite seguro en resolución 8 "
+                   f"({MAX_BBOX_AREA_DEG} grados²). Acérquese el zoom o solicite una "
+                   f"resolución agregada ('res').",
+        )
 
 
 @router.get("/warmup")
@@ -115,6 +154,7 @@ def get_variable_layer(
     # memoria acotada (evita OOM con bbox grande). Sin `res` = res8 por celda.
     res_raw = payload.get("res")
     res = int(res_raw) if res_raw is not None else None
+    _guard_bbox_area(bbox, res)  # Fase A: corta el zoom-out en res 8 antes de tocar SQL
     return JSONResponse(
         content=tile_service.get_variable_layer(source, code, bbox, threshold, subtemplate, res),
         headers={"Cache-Control": "public, max-age=3600"},
@@ -137,6 +177,7 @@ def get_variable_layers(
     subtemplate = bool(payload.get("subtemplate") or False)
     res_raw = payload.get("res")
     res = int(res_raw) if res_raw is not None else None
+    _guard_bbox_area(bbox, res)  # Fase A: corta el zoom-out en res 8 antes de tocar SQL
     return JSONResponse(
         content=tile_service.get_variable_layers(source, codes, bbox, threshold, subtemplate, res),
         headers={"Cache-Control": "public, max-age=3600"},
