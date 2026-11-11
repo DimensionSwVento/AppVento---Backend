@@ -87,6 +87,22 @@ def get_counts(
     return JSONResponse(content=tile_service.get_counts(source, zoom, selected_list, var))
 
 
+@router.get("/variable-quantiles", dependencies=_auth)
+def get_variable_quantiles(
+    var: str = Query(...),
+    bands: int = Query(default=5),
+    source: HexagonSource = Depends(get_hexagon_source),
+):
+    """Cortes de cuantil + min/max de una variable sobre TODA Colombia → alimenta la
+    ESCALA DE COLOR choropleth (bandas claro→oscuro) y su leyenda de rangos. Fijo por
+    variable (no por bbox): el color de un hex se decide por en qué cuantil cae su
+    valor respecto de todos los demás."""
+    q = source.variable_quantiles(var, bands)
+    if q is None:
+        raise HTTPException(status_code=404, detail=f"sin datos numéricos para {var}")
+    return JSONResponse(content=q)
+
+
 @router.get("/detail/{h3_index}", dependencies=_auth)
 def get_detail(h3_index: str, source: HexagonSource = Depends(get_hexagon_source)):
     detail = tile_service.get_detail(source, h3_index)

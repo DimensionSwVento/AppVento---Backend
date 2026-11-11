@@ -213,6 +213,31 @@ class PostgresHexagonSource:
             )
         }
 
+    def variable_quantiles(self, var_name: str, bands: int = 5) -> Optional[dict]:
+        """Cortes de CUANTIL (bands-1 cortes) + min/max de `var_name` sobre TODA la
+        tabla, para la ESCALA DE COLOR choropleth (bandas claro→oscuro por cuantiles,
+        pedido del cliente). `percentile_cont` interpola; solo cuenta valores
+        numéricos del JSONB `variables`. `bands` lo controla el server (int acotado),
+        por eso las fracciones se interpolan en el SQL sin riesgo; `var_name` va por
+        bind. Devuelve None si la variable no tiene valores numéricos."""
+        bands = max(2, min(12, int(bands)))
+        fracs = ", ".join(f"{i / bands:.6f}" for i in range(1, bands))
+        row = self.db.execute(text(
+            f"SELECT percentile_cont(ARRAY[{fracs}]) "
+            "WITHIN GROUP (ORDER BY (variables ->> :v)::float8) AS cuts, "
+            "min((variables ->> :v)::float8) AS vmin, "
+            "max((variables ->> :v)::float8) AS vmax "
+            "FROM hexagon WHERE jsonb_typeof(variables -> :v) = 'number'"
+        ).bindparams(v=var_name)).first()
+        if not row or row[0] is None:
+            return None
+        return {
+            "cuts": [float(c) for c in row[0]],
+            "min": float(row[1]) if row[1] is not None else 0.0,
+            "max": float(row[2]) if row[2] is not None else 0.0,
+            "bands": bands,
+        }
+
     # ── Estado ───────────────────────────────────────────────────────────────
     def count(self) -> int:
         return self.db.scalar(select(func.count()).select_from(Hexagon)) or 0
