@@ -31,7 +31,7 @@ from infrastructure.db.models import Hexagon, HexagonMeta
 # exigiría recalcular el padre en cada consulta. res2–4 = escalones de ALEJAR
 # (presupuesto N chico); res5/6 = los originales. res7/8 van por stream_bbox (bbox
 # chico). UNA sola fuente de verdad para no repetir la lista en ingesta/MVs/query.
-_MV_RES: tuple[int, ...] = (2, 3, 4, 5, 6, 7)
+_MV_RES: tuple[int, ...] = (4, 5, 6, 7)
 _H3_RES_COLS: tuple[str, ...] = tuple(f"h3_res{r}" for r in _MV_RES)
 _MV_NAME = {r: f"mv_hexagon_res{r}" for r in _MV_RES}
 

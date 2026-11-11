@@ -24,7 +24,7 @@ from sqlalchemy import text
 
 from infrastructure.db.session import SessionLocal
 
-DEFAULT_RES = (2, 3, 4, 7)  # las nuevas de la escalera (res5/6 ya pobladas)
+DEFAULT_RES = (4, 7)  # las nuevas de la escalera (res5/6 ya pobladas)
 DEFAULT_BATCH = 50_000
 
 

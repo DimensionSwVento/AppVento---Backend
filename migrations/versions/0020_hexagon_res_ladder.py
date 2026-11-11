@@ -31,7 +31,7 @@ down_revision: Union[str, None] = "0019_hexagon_mv_by_resolution"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
-_NEW_RES = (2, 3, 4, 7)  # res5/6 ya existen (0018/0019); res8 = tabla cruda
+_NEW_RES = (4, 7)  # res5/6 ya existen (0018/0019); res4 = mín del mapa; res8 = tabla cruda
 
 
 def _mv_sql(res_col: str) -> str:
