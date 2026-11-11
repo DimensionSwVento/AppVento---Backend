@@ -169,7 +169,13 @@ class PostgresHexagonSource:
         out: list[HexRow] = []
         for h3_index, score_general, is_excluded, lat, lng, variables in self.db.execute(stmt):
             out.append(HexRow(
-                h3_index=h3_index,
+                # La MV guarda `h3_index` como BIGINT (deriva de h3_res5/6). El
+                # `text()` crudo NO pasa por el TypeDecorator `H3Index`, así que hay
+                # que convertir el entero al TOKEN hex igual que `process_result_value`
+                # (`format(int, "x")`). Sin esto, el front recibe un número y
+                # `cellToBoundary` falla → la capa NO se dibuja (res5/6 en blanco,
+                # mientras res7/8 por el ORM sí convertían).
+                h3_index=format(int(h3_index), "x") if h3_index is not None else "",
                 score_general=score_general or 0.0,
                 tipo_celda="excluida" if is_excluded else "disponible",
                 lat=lat if lat is not None else 0.0,
