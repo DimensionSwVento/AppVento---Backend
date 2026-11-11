@@ -154,8 +154,14 @@ class Hexagon(Base):
     # (`_h3_parent_bigint`, Python — no depende de la extensión h3-pg). Alimenta
     # el GROUP BY de las vistas materializadas `mv_hexagon_res5`/`res6` (Fase C3)
     # y el enrutamiento por resolución del repositorio (Fase C5).
+    # Escalera de resoluciones de resumen (padre H3 por res, BIGINT vía H3Index).
+    # res2–4 = escalones de alejar (presupuesto N chico); res5/6 = originales.
+    h3_res2: Mapped[str | None] = mapped_column(H3Index, nullable=True, index=True)
+    h3_res3: Mapped[str | None] = mapped_column(H3Index, nullable=True, index=True)
+    h3_res4: Mapped[str | None] = mapped_column(H3Index, nullable=True, index=True)
     h3_res5: Mapped[str | None] = mapped_column(H3Index, nullable=True, index=True)
     h3_res6: Mapped[str | None] = mapped_column(H3Index, nullable=True, index=True)
+    h3_res7: Mapped[str | None] = mapped_column(H3Index, nullable=True, index=True)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=_now, onupdate=_now
     )

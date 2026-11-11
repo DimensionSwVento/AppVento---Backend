@@ -151,7 +151,7 @@ class PostgresHexagonSource:
     # Nombre de tabla fijo (nunca viene de input externo) → interpolar en el SQL
     # es seguro (no hay forma de inyectar vía `res`, que solo puede ser 5 o 6
     # para pegar aquí; cualquier otro valor cae al `None` de abajo).
-    _RES_TO_MV = {5: "mv_hexagon_res5", 6: "mv_hexagon_res6"}
+    _RES_TO_MV = {r: f"mv_hexagon_res{r}" for r in (2, 3, 4, 5, 6, 7)}
 
     def fetch_resolution_mv(
         self, res: int, west: float, south: float, east: float, north: float,
