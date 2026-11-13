@@ -8,6 +8,7 @@ from dataclasses import asdict
 from sqlalchemy.orm import Session
 
 from application.services import tile_service, catalog_service
+from infrastructure import geocode as geocode_mod
 from domain.query_engine.source import HexagonSource
 from api.deps import get_hexagon_source
 from infrastructure.db.session import get_db
@@ -101,6 +102,14 @@ def get_variable_quantiles(
     if q is None:
         raise HTTPException(status_code=404, detail=f"sin datos numéricos para {var}")
     return JSONResponse(content=q)
+
+
+@router.get("/geocode", dependencies=_auth)
+def geocode(q: str = Query(default=""), limit: int = Query(default=7)):
+    """Búsqueda de lugares PROPIA (sin Nominatim): consulta `geo/geocodes-colombia.json`
+    (lugares de Colombia desde OpenStreetMap, generado una vez). Devuelve
+    `{results: [{name, lat, lng, type}]}`."""
+    return JSONResponse(content={"results": geocode_mod.search(q, limit)})
 
 
 @router.get("/detail/{h3_index}", dependencies=_auth)
