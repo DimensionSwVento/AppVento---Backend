@@ -14,6 +14,10 @@ from pathlib import Path
 
 _GEO_FILE = Path(__file__).resolve().parents[1] / "geo" / "geocodes-colombia.json"
 
+# Umbral de dedup geográfico (grados ~ 0.4° ≈ 44 km): dos entradas homónimas más
+# cercanas que esto son el mismo lugar repetido por OSM; más lejos = lugares distintos.
+_DUP_DEG = 0.4
+
 # Orden de preferencia por tipo (una ciudad pesa más que un caserío homónimo).
 _TYPE_RANK = {
     "city": 0,
@@ -56,7 +60,12 @@ def _entries() -> list[tuple[str, str, float, float, str]]:
 
 def search(q: str, limit: int = 7) -> list[dict]:
     """Lugares cuyo nombre coincide con `q` (exacto > prefijo > subcadena), ordenados
-    por coincidencia y tipo. Devuelve `[{name, lat, lng, type}]`."""
+    por coincidencia y tipo, SIN duplicados. Devuelve `[{name, lat, lng, type}]`.
+
+    Dedup: OSM trae el mismo lugar varias veces (p. ej. 5 "Medellín" casi en el
+    mismo punto). Se colapsan por nombre normalizado cuando caen cerca (≤ ~0.4°, un
+    mismo municipio), conservando el de mejor tipo; se mantienen como entradas
+    distintas los homónimos realmente lejanos (dos "San José" en deptos. distintos)."""
     nq = _norm((q or "").strip())
     if len(nq) < 2:
         return []
@@ -72,7 +81,21 @@ def search(q: str, limit: int = 7) -> list[dict]:
             continue
         scored.append((match, _TYPE_RANK.get(typ, 9), len(nn), name, lat, lng, typ))
     scored.sort()
-    return [
-        {"name": n, "lat": la, "lng": lo, "type": t}
-        for _, _, _, n, la, lo, t in scored[:limit]
-    ]
+
+    # Dedup geográfico: el primero (mejor rankeado) de cada nombre gana; se descarta
+    # otro homónimo solo si cae a ≤ _DUP_DEG del ya conservado (mismo lugar repetido).
+    kept: list[tuple[str, float, float, str]] = []  # (name_norm, lat, lng, name, type)
+    out: list[dict] = []
+    for _, _, _, name, lat, lng, typ in scored:
+        nn = _norm(name)
+        dup = any(
+            knn == nn and abs(klat - lat) <= _DUP_DEG and abs(klng - lng) <= _DUP_DEG
+            for knn, klat, klng, _ in kept
+        )
+        if dup:
+            continue
+        kept.append((nn, lat, lng, name))
+        out.append({"name": name, "lat": lat, "lng": lng, "type": typ})
+        if len(out) >= limit:
+            break
+    return out
