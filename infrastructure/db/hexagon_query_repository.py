@@ -151,7 +151,7 @@ class PostgresHexagonSource:
     # Nombre de tabla fijo (nunca viene de input externo) → interpolar en el SQL
     # es seguro (no hay forma de inyectar vía `res`, que solo puede ser 5 o 6
     # para pegar aquí; cualquier otro valor cae al `None` de abajo).
-    _RES_TO_MV = {5: "mv_hexagon_res5", 6: "mv_hexagon_res6"}
+    _RES_TO_MV = {r: f"mv_hexagon_res{r}" for r in (4, 5, 6, 7)}
 
     def fetch_resolution_mv(
         self, res: int, west: float, south: float, east: float, north: float,
@@ -169,7 +169,13 @@ class PostgresHexagonSource:
         out: list[HexRow] = []
         for h3_index, score_general, is_excluded, lat, lng, variables in self.db.execute(stmt):
             out.append(HexRow(
-                h3_index=h3_index,
+                # La MV guarda `h3_index` como BIGINT (deriva de h3_res5/6). El
+                # `text()` crudo NO pasa por el TypeDecorator `H3Index`, así que hay
+                # que convertir el entero al TOKEN hex igual que `process_result_value`
+                # (`format(int, "x")`). Sin esto, el front recibe un número y
+                # `cellToBoundary` falla → la capa NO se dibuja (res5/6 en blanco,
+                # mientras res7/8 por el ORM sí convertían).
+                h3_index=format(int(h3_index), "x") if h3_index is not None else "",
                 score_general=score_general or 0.0,
                 tipo_celda="excluida" if is_excluded else "disponible",
                 lat=lat if lat is not None else 0.0,
@@ -205,6 +211,31 @@ class PostgresHexagonSource:
             for v, mn, mx in self.db.execute(
                 select(HexagonMeta.variable, HexagonMeta.vmin, HexagonMeta.vmax)
             )
+        }
+
+    def variable_quantiles(self, var_name: str, bands: int = 5) -> Optional[dict]:
+        """Cortes de CUANTIL (bands-1 cortes) + min/max de `var_name` sobre TODA la
+        tabla, para la ESCALA DE COLOR choropleth (bandas claro→oscuro por cuantiles,
+        pedido del cliente). `percentile_cont` interpola; solo cuenta valores
+        numéricos del JSONB `variables`. `bands` lo controla el server (int acotado),
+        por eso las fracciones se interpolan en el SQL sin riesgo; `var_name` va por
+        bind. Devuelve None si la variable no tiene valores numéricos."""
+        bands = max(2, min(12, int(bands)))
+        fracs = ", ".join(f"{i / bands:.6f}" for i in range(1, bands))
+        row = self.db.execute(text(
+            f"SELECT percentile_cont(ARRAY[{fracs}]) "
+            "WITHIN GROUP (ORDER BY (variables ->> :v)::float8) AS cuts, "
+            "min((variables ->> :v)::float8) AS vmin, "
+            "max((variables ->> :v)::float8) AS vmax "
+            "FROM hexagon WHERE jsonb_typeof(variables -> :v) = 'number'"
+        ).bindparams(v=var_name)).first()
+        if not row or row[0] is None:
+            return None
+        return {
+            "cuts": [float(c) for c in row[0]],
+            "min": float(row[1]) if row[1] is not None else 0.0,
+            "max": float(row[2]) if row[2] is not None else 0.0,
+            "bands": bands,
         }
 
     # ── Estado ───────────────────────────────────────────────────────────────

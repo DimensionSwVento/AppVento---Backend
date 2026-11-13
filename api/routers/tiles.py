@@ -8,6 +8,7 @@ from dataclasses import asdict
 from sqlalchemy.orm import Session
 
 from application.services import tile_service, catalog_service
+from infrastructure import geocode as geocode_mod
 from domain.query_engine.source import HexagonSource
 from api.deps import get_hexagon_source
 from infrastructure.db.session import get_db
@@ -87,6 +88,30 @@ def get_counts(
     return JSONResponse(content=tile_service.get_counts(source, zoom, selected_list, var))
 
 
+@router.get("/variable-quantiles", dependencies=_auth)
+def get_variable_quantiles(
+    var: str = Query(...),
+    bands: int = Query(default=5),
+    source: HexagonSource = Depends(get_hexagon_source),
+):
+    """Cortes de cuantil + min/max de una variable sobre TODA Colombia → alimenta la
+    ESCALA DE COLOR choropleth (bandas claro→oscuro) y su leyenda de rangos. Fijo por
+    variable (no por bbox): el color de un hex se decide por en qué cuantil cae su
+    valor respecto de todos los demás."""
+    q = source.variable_quantiles(var, bands)
+    if q is None:
+        raise HTTPException(status_code=404, detail=f"sin datos numéricos para {var}")
+    return JSONResponse(content=q)
+
+
+@router.get("/geocode", dependencies=_auth)
+def geocode(q: str = Query(default=""), limit: int = Query(default=7)):
+    """Búsqueda de lugares PROPIA (sin Nominatim): consulta `geo/geocodes-colombia.json`
+    (lugares de Colombia desde OpenStreetMap, generado una vez). Devuelve
+    `{results: [{name, lat, lng, type}]}`."""
+    return JSONResponse(content={"results": geocode_mod.search(q, limit)})
+
+
 @router.get("/detail/{h3_index}", dependencies=_auth)
 def get_detail(h3_index: str, source: HexagonSource = Depends(get_hexagon_source)):
     detail = tile_service.get_detail(source, h3_index)
@@ -157,29 +182,6 @@ def get_variable_layer(
     _guard_bbox_area(bbox, res)  # Fase A: corta el zoom-out en res 8 antes de tocar SQL
     return JSONResponse(
         content=tile_service.get_variable_layer(source, code, bbox, threshold, subtemplate, res),
-        headers={"Cache-Control": "public, max-age=3600"},
-    )
-
-
-@router.post("/variables-bulk", dependencies=_auth)
-def get_variable_layers(
-    payload: dict = Body(...),
-    source: HexagonSource = Depends(get_hexagon_source),
-):
-    """BULK de varias capas en UNA pasada del bbox (evita N scans que apilan hilos).
-    Body: `{ codes: [...], bbox?, threshold?, res?, subtemplate? }`
-    → `{ code: [{h3_index, value}] }`."""
-    codes = payload.get("codes") or []
-    if not isinstance(codes, list) or not codes:
-        raise HTTPException(status_code=400, detail="Falta 'codes' (lista no vacía)")
-    bbox = payload.get("bbox")
-    threshold = float(payload.get("threshold") or 0.0)
-    subtemplate = bool(payload.get("subtemplate") or False)
-    res_raw = payload.get("res")
-    res = int(res_raw) if res_raw is not None else None
-    _guard_bbox_area(bbox, res)  # Fase A: corta el zoom-out en res 8 antes de tocar SQL
-    return JSONResponse(
-        content=tile_service.get_variable_layers(source, codes, bbox, threshold, subtemplate, res),
         headers={"Cache-Control": "public, max-age=3600"},
     )
 

@@ -61,6 +61,25 @@ class FakeHexagonSource:
     def variable_ranges(self) -> dict[str, dict[str, float]]:
         return dict(self._ranges)
 
+    def variable_quantiles(self, var_name: str, bands: int = 5) -> dict | None:
+        # Percentil por interpolación lineal (misma semántica que percentile_cont),
+        # calculado sobre los valores numéricos de las filas en memoria.
+        vals = sorted(
+            float(r.variables[var_name])
+            for r in self._rows.values()
+            if isinstance(r.variables.get(var_name), (int, float))
+        )
+        if not vals:
+            return None
+        bands = max(2, min(12, int(bands)))
+        cuts = []
+        for i in range(1, bands):
+            pos = (len(vals) - 1) * (i / bands)
+            lo = int(pos)
+            hi = min(lo + 1, len(vals) - 1)
+            cuts.append(vals[lo] + (vals[hi] - vals[lo]) * (pos - lo))
+        return {"cuts": cuts, "min": vals[0], "max": vals[-1], "bands": bands}
+
     # ── estado ────────────────────────────────────────────────────────────
     def count(self) -> int:
         return len(self._rows)

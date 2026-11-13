@@ -86,6 +86,12 @@ class HexagonSource(Protocol):
         """Todos los rangos (para `variables` y `counts`)."""
         ...
 
+    def variable_quantiles(self, var_name: str, bands: int = 5) -> Optional[dict]:
+        """Cortes de cuantil (bands-1) + min/max de una variable sobre toda la tabla,
+        para la ESCALA DE COLOR choropleth (bandas por cuantiles). None si no hay
+        valores numéricos. Ver `variables-en-mapa` (escala de color por cuartiles)."""
+        ...
+
     def count(self) -> int:
         """Total de hexágonos (para health / counts)."""
         ...

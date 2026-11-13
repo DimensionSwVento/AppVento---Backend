@@ -25,13 +25,19 @@ from infrastructure.db.models import Hexagon, HexagonMeta
 
 # Orden de columnas para la ingesta masiva (COPY / bulk). `updated_at` se fija a un
 # único timestamp por corrida.
-# `h3_res5`/`h3_res6` (Fase C1): celda PADRE en esas resoluciones, como BIGINT
-# (misma convención que `h3_index`). Alimentan las vistas materializadas
-# `mv_hexagon_res5`/`res6` (Fase C3) vía GROUP BY — sin esto, agregar por
-# resolución exigiría recalcular el padre en cada consulta.
+# Escalera de resoluciones con vista materializada de resumen. Cada `res{N}` tiene
+# una columna PADRE `h3_res{N}` (BIGINT, misma convención que `h3_index`) y una MV
+# `mv_hexagon_res{N}` que agrega por GROUP BY — sin esto, resumir por resolución
+# exigiría recalcular el padre en cada consulta. res2–4 = escalones de ALEJAR
+# (presupuesto N chico); res5/6 = los originales. res7/8 van por stream_bbox (bbox
+# chico). UNA sola fuente de verdad para no repetir la lista en ingesta/MVs/query.
+_MV_RES: tuple[int, ...] = (4, 5, 6, 7)
+_H3_RES_COLS: tuple[str, ...] = tuple(f"h3_res{r}" for r in _MV_RES)
+_MV_NAME = {r: f"mv_hexagon_res{r}" for r in _MV_RES}
+
 _COPY_COLS = (
     "h3_index", "score_general", "tipo_celda", "lat", "lng", "variables",
-    "h3_res5", "h3_res6", "updated_at",
+    *_H3_RES_COLS, "updated_at",
 )
 
 
@@ -80,10 +86,9 @@ def _to_row(data: dict) -> dict:
         # ingesta clásica de un solo parquet sigue funcionando igual.
         "scores": _clean_variables(data.get("scores")),
         "emplazamiento": str(data.get("emplazamiento") or "onshore"),
-        # Fase C1: celda padre en res5/res6 (BIGINT) — agregación por resolución
-        # (ver `_h3_parent_bigint`).
-        "h3_res5": _h3_parent_bigint(h3_index, 5),
-        "h3_res6": _h3_parent_bigint(h3_index, 6),
+        # Fase C1: celda padre en cada resolución de la escalera (BIGINT) — agregación
+        # por resolución (ver `_h3_parent_bigint`).
+        **{f"h3_res{r}": _h3_parent_bigint(h3_index, r) for r in _MV_RES},
         # Explícito: los caminos Core/text (upsert/blue-green) no aplican el
         # default Python del ORM, así que fijamos el timestamp de la corrida.
         "updated_at": datetime.now(timezone.utc),
@@ -141,7 +146,7 @@ def refresh_resolution_mvs(db: Session) -> None:
     `bundle_service.finalize` (no por cada chunk).
 
     NO usar esta función tras `blue_green_replace` — ver `recreate_resolution_mvs`."""
-    for mv in ("mv_hexagon_res5", "mv_hexagon_res6"):
+    for mv in _MV_NAME.values():
         db.execute(text(f"REFRESH MATERIALIZED VIEW CONCURRENTLY {mv}"))
     db.commit()
 
@@ -202,7 +207,8 @@ def recreate_resolution_mvs(db: Session) -> None:
     REFRESH tras el swap, la vista seguiría leyendo la tabla VIEJA (ahora
     `hexagon_backup`) en silencio — datos desactualizados sin ningún error.
     Recrear la vista después del swap la reata a la tabla `hexagon` ACTUAL."""
-    for res_col, mv in (("h3_res5", "mv_hexagon_res5"), ("h3_res6", "mv_hexagon_res6")):
+    for r, mv in _MV_NAME.items():
+        res_col = f"h3_res{r}"
         db.execute(text(f"DROP MATERIALIZED VIEW IF EXISTS {mv}"))
         db.execute(text(f"CREATE MATERIALIZED VIEW {mv} AS{_resolution_mv_select(res_col)}"))
         db.execute(text(f"CREATE UNIQUE INDEX idx_{mv}_pk ON {mv} (h3_index)"))
@@ -245,7 +251,7 @@ def copy_ingest(
             # que `_h3_parent_bigint`/`H3Index`).
             cp.set_types([
                 "int8", "float8", "text", "float8", "float8", "jsonb",
-                "int8", "int8", "timestamptz",
+                *(["int8"] * len(_MV_RES)), "timestamptz",
             ])
             for h in hexagons:
                 variables = h.get("variables") or {}
@@ -257,8 +263,7 @@ def copy_ingest(
                     h.get("lat"),
                     h.get("lng"),
                     Jsonb(variables),
-                    _h3_parent_bigint(token, 5),
-                    _h3_parent_bigint(token, 6),
+                    *(_h3_parent_bigint(token, r) for r in _MV_RES),
                     now,
                 ))
                 _accumulate_meta(meta, variables)
@@ -356,13 +361,13 @@ def _upsert_chunk(db: Session, batch: list[dict], provided: set[str]) -> None:
         set_["tipo_celda"] = stmt.excluded.tipo_celda
     if "score_general" in provided:
         set_["score_general"] = stmt.excluded.score_general
-    # lat/lng/emplazamiento/h3_res5/h3_res6 son consistentes por hex (derivan de
+    # lat/lng/emplazamiento/h3_res{N} son consistentes por hex (derivan de
     # h3_index, que no cambia) → se refrescan siempre, sin importar `provided`.
     set_["lat"] = stmt.excluded.lat
     set_["lng"] = stmt.excluded.lng
     set_["emplazamiento"] = stmt.excluded.emplazamiento
-    set_["h3_res5"] = stmt.excluded.h3_res5
-    set_["h3_res6"] = stmt.excluded.h3_res6
+    for col in _H3_RES_COLS:
+        set_[col] = getattr(stmt.excluded, col)
     set_["updated_at"] = func.now()
     db.execute(stmt.on_conflict_do_update(index_elements=["h3_index"], set_=set_))
 
